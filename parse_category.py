@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Детектор рынка, этап 2 (версия 3.1: валюта в отчёте, счёт отметок, список лотов без отметки).
+"""Детектор рынка, этап 2 (версия 3.5: добавлен Region RP в чужие проекты; 3.4: ручная «ниша» и «скрипт» действуют и на лоты, подтверждённые правилом; 3.3: автоопределение скриптов по «авто-»/«auto-» и набору занятий, автоопределение ниши; 3.2: фильтр чужих проектов; валюта в отчёте, счёт отметок, список лотов без отметки).
 Читает ЛОКАЛЬНУЮ сохранённую страницу категории FunPay. В интернет не ходит.
 Берёт только публичные данные лотов. Продажи и выручку не считает.
 
@@ -21,7 +21,9 @@ from bs4 import BeautifulSoup
 GAME_OK = 'gta 5'            # метка игры на FunPay; 'samp' отбрасываем
 TYPE_OK = 'прочее'           # скрипты лежат в «Прочее»
 CURRENCY_OK = '₽'
-SAMP_WORDS = r'samp|crmp|самп|крмп'
+# Чужие проекты: наш проект GTA 5 RP (GTA5RP). Лоты с этими словами в названии отбрасываются.
+SAMP_WORDS = (r'samp|crmp|самп|крмп|majestic|маджестик|мажестик|\bnova\b|rmrp|рмрп|'
+              r'росси[яи]\s*онлайн|russia\s*online|region\s*-?\s*rp|регион\s*-?\s*рп')
 CHEAT_WORDS = r'dlc|rage|leet|1337|просвет|wallhack|скелет|прицел|наведен|стрельба|\besp\b|\baim'
 SCRIPT_WORDS = (r'скрипт|script|ahk|афк|afk|макрос|автомат|авто-?(порт|бег|перекуп|скупк|рыбалк|строй)|'
                 r'включил и забыл|работает сам|свёрнут|свернут|помощник')
@@ -31,13 +33,33 @@ NUM_WEEKS = r'(?<!\d)(\d{1,2})\s*недел'
 NUM_MONTHS = r'(?<!\d)(\d{1,2})\s*месяц'
 FOREVER = r'навсегда|forever|пожизнен'
 BUCKETS = [('до 50', 0, 49), ('50–500', 50, 500), ('больше 500', 501, 10 ** 9)]
-STEPS = ['игра не GTA 5', 'тип не «Прочее»', 'в названии SAMP/CRMP', 'срок не указан', 'другой срок',
-         'несколько сроков', 'не скрипт-автоматизация', 'не подтверждён', 'цена не в рублях', 'нет цены']
+STEPS = ['игра не GTA 5', 'тип не «Прочее»', 'в названии чужой проект', 'срок не указан', 'другой срок',
+         'несколько сроков', 'не скрипт-автоматизация', 'ручная отметка', 'не подтверждён', 'цена не в рублях', 'нет цены']
 MARK_VALUES = ('скрипт', 'ниша', 'нет')
+# Автоопределение скрипта (v3.3). Кроме SCRIPT_WORDS лот считается скриптом, если:
+#  1) в названии «авто-»/«auto-» через дефис (АВТО-КАЧАЛКА, AUTO-COOKING), но не «авто-выдача»/«автовыдача»;
+#  2) или названо не меньше двух игровых занятий (шахта, стройка, качалка, кулинария, коровы, такси...).
+AUTO_ISSUE = r'(?:авто|auto)-?\s?(?:выдач|deliver)\w*'
+AUTO_WORDS = r'(?<![a-zа-яё])(?:авто|auto)-\s?[a-zа-яё]'
+ACTIVITY_WORDS = [r'шахт', r'стройк', r'качалк', r'кулинар|готовк', r'коров|(?<![а-яё])ферм', r'такси',
+                  r'деморган|demorgan', r'рыбалк|рыбак|рыбы', r'(?<![а-яё])порт\b']
+# Ниша (автоматически): торговая площадка 5VITO и скупщики/спекулянты. Остальные ниши вы отмечаете вручную.
+NICHE_WORDS = r'5vito|bvito|скупщик|спекулянт'
 
 
 def has(p, t):
     return re.search(p, t, re.I) is not None
+
+
+def is_script_text(t):
+    t = re.sub(AUTO_ISSUE, ' ', t, flags=re.I)         # «автовыдача» не признак скрипта
+    if has(SCRIPT_WORDS, t) or has(AUTO_WORDS, t):
+        return True
+    return sum(1 for w in ACTIVITY_WORDS if has(w, t)) >= 2
+
+
+def is_niche(t):
+    return has(NICHE_WORDS, t)
 
 
 def find_terms(t):
@@ -104,7 +126,7 @@ def classify(l):
     if l['тип'] != TYPE_OK:
         return '', 'тип не «Прочее»: ' + l['тип']
     if has(SAMP_WORDS, t):
-        return '', 'в названии SAMP/CRMP'
+        return '', 'в названии чужой проект (SAMP, Majestic, NOVA, RMRP, Россия онлайн, Region RP)'
     terms = find_terms(t)
     if not terms:
         return '', 'срок не указан в названии'
@@ -114,7 +136,7 @@ def classify(l):
         return '', 'несколько сроков в названии'
     if has(CHEAT_WORDS, t):
         return '7 дней', 'не скрипт-автоматизация (DLC/ESP/наведение)'
-    if not has(SCRIPT_WORDS, t):
+    if not is_script_text(t):
         return '7 дней', 'не подтверждён как скрипт (нет слов-признаков)'
     return '7 дней', None
 
@@ -283,9 +305,12 @@ def main():
         seen.add(l['id'])
         lots.append(l)
 
+    marks = read_marks(a.marks)
     kept, dropped = [], []
     for l in lots:
         term, reason = classify(l)
+        if reason is None and marks.get(l['id']) == 'нет':
+            reason = 'ручная отметка: не скрипт (правило подтвердило, но вы отметили «нет»)'
         if reason is None and l['валюта'] != CURRENCY_OK:
             reason = f'цена не в рублях ({l["валюта"] or "нет значка"})'
         if reason is None and l['цена_руб'] is None:
@@ -293,7 +318,8 @@ def main():
         l['срок'] = term
         l['дата_страницы'] = a.date
         l['источник'] = 'правило'
-        l['ниша'] = ''
+        m0 = marks.get(l['id'])        # ручная отметка сильнее правила: «ниша» ставит нишу, «скрипт» снимает автониша
+        l['ниша'] = 'да' if reason is None and (m0 == 'ниша' or (m0 != 'скрипт' and is_niche(l['название']))) else ''
         if reason:
             l['причина_отброса'] = reason
             dropped.append(l)
@@ -306,7 +332,6 @@ def main():
         l['№'] = n
     add_dup_flags(unconfirmed)
 
-    marks = read_marks(a.marks)
     if apply_set_args(a, unconfirmed, marks):
         save_marks(a.marks, marks, {l['id']: l for l in unconfirmed})
     promoted, rejected = [], []

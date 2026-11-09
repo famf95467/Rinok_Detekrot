@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Детектор рынка: загрузчик страницы категории FunPay (версия 1).
+"""Детектор рынка: загрузчик страницы категории FunPay (версия 1.4).
 
-Делает не больше одного прохода в день: проверяет robots.txt, затем один раз скачивает
-публичную страницу категории как гость и сохраняет её в pages\\kategoriya_ГГГГ-ММ-ДД.htm.
-Потом запускает parse_category.py на этой странице.
+Проверка robots.txt ОТКЛЮЧЕНА по решению пользователя (проект «Бизнесс»), 04.11.2026.
+Функция check_robots оставлена в файле, но не вызывается.
+
+Лимит проходов и интервал между ними УБРАНЫ по решению пользователя (проект «Бизнесс»), 04.11.2026:
+запускать можно сколько угодно раз, каждый запуск делает один запрос страницы категории.
+Остаётся одно ограничение: если проход сегодня остановлен (блокировка, капча, редирект, HTTP-ошибка),
+следующий запуск в этот день отказывает. Один раз скачивает
+публичную страницу категории как гость и сохраняет её в pages\\kategoriya_ГГГГ-ММ-ДД.htm
+(повторные за день: kategoriya_ГГГГ-ММ-ДД_ЧЧММСС.htm). Потом запускает parse_category.py на этой странице.
 
 Что загрузчик НЕ делает: не входит в аккаунт, не шлёт никаких cookie, кроме валюты показа cy=rub
 (её можно отключить: --currency none), не решает капчу, не меняет адрес
-и заголовки, чтобы обойти защиту, не повторяет запрос после блокировки, не ходит параллельно.
-При капче, блокировке, редиректе или запрете в robots.txt он останавливается и пишет, что делать.
+и заголовки, чтобы обойти защиту, не повторяет запрос после блокировки в тот же день,
+не ходит параллельно.
+При капче, блокировке или редиректе он останавливается и пишет, что делать.
 
 Запуск:  python fetch_category.py
 Только Python 3 без дополнительных библиотек.
@@ -18,7 +25,7 @@ import urllib.error, urllib.request, urllib.robotparser
 from urllib.parse import urlparse
 
 BASE = os.environ.get('MARKET_TEST_BASE', 'https://funpay.com')   # переменные MARKET_TEST_* только для проверки на локальном сервере
-USER_AGENT = 'MarketDetector/1.0 (personal price research; one page per day; guest)'
+USER_AGENT = 'MarketDetector/1.0 (personal price research; rare guest requests)'
 PAUSE = float(os.environ['MARKET_TEST_PAUSE']) if 'MARKET_TEST_PAUSE' in os.environ else None
 TIMEOUT = float(os.environ.get('MARKET_TEST_TIMEOUT', '30'))
 MAX_BYTES = 40 * 1024 * 1024
@@ -131,7 +138,7 @@ def main():
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description='Один проход в день по странице категории FunPay (гость).')
+    ap = argparse.ArgumentParser(description='Загрузка страницы категории FunPay (гость), без лимита проходов.')
     ap.add_argument('--path', default='/lots/1112/', help='путь категории, по умолчанию «Прочее GTA 5 RP, SAMP»')
     ap.add_argument('--pages', default='pages')
     ap.add_argument('--out', default='out')
@@ -140,11 +147,15 @@ def main():
     ap.add_argument('--currency', choices=sorted(CURRENCY_COOKIES), default='rub',
                     help='валюта показа: rub (по умолчанию), usd, eur или none (не посылать ничего)')
     ap.add_argument('--no-parse', action='store_true')
+    ap.add_argument('--again', action='store_true', help=argparse.SUPPRESS)   # оставлен для совместимости, ничего не делает
     a = ap.parse_args()
     if not re.fullmatch(r'/lots/\d+/', a.path):
         sys.exit('Разрешены только страницы категорий вида /lots/ЧИСЛО/.')
 
     day = today()
+    now = datetime.datetime.now()
+    stamp = now.strftime('%H%M%S')
+    again = False
     state = {}
     if os.path.exists(a.state):
         try:
@@ -152,19 +163,21 @@ def main():
         except (OSError, ValueError):
             state = {}
     if state.get('дата') == day:
-        print(f'Сегодня ({day}) проход уже был: {state.get("результат", "?")}. Один проход в день, повторяйте завтра.')
-        return 3
+        last = str(state.get('результат', '?'))
+        if last.startswith('остановлен'):
+            print(f'Сегодня проход остановлен ({last}). После блокировки, капчи или редиректа повтор в этот день запрещён. Попробуйте завтра.')
+            return 3
+        again = True
+        print(f'Повторный проход за {day} (прошлый результат: {last}).')
 
     def save_state(result):
         with open(a.state, 'w', encoding='utf-8') as f:
-            json.dump({'дата': day, 'результат': result}, f, ensure_ascii=False)
+            json.dump({'дата': day, 'результат': result, 'время': datetime.datetime.now().isoformat(timespec='seconds')}, f, ensure_ascii=False)
 
     save_state('начат, не завершён')               # попытка считается сразу, даже если окно закрыли
     os.makedirs(a.pages, exist_ok=True)
     try:
-        print(f'Дата {day}. Гостевой режим, без входа в аккаунт. Проверяю robots.txt...')
-        check_robots(a.path)
-        pause(10, 20)
+        print(f'Дата {day}. Гостевой режим, без входа в аккаунт. robots.txt не проверяется (отключено по решению пользователя).')
         cookie = CURRENCY_COOKIES[a.currency]
         print('Загружаю страницу категории (один запрос'
               + (f', валюта показа {cookie}: это настройка отображения, не вход в аккаунт' if cookie else ', без cookie')
@@ -184,9 +197,10 @@ def main():
         print('Пока можно сохранять страницу вручную в браузере (гостем).')
         return s.code
 
-    name = f'kategoriya_{day}.htm'
+    base = f'kategoriya_{day}_{stamp}' if again else f'kategoriya_{day}'
+    name = base + '.htm'
     if os.path.exists(os.path.join(a.pages, name)):
-        name = f'kategoriya_{day}_auto.htm'        # не затираем вашу ручную страницу
+        name = base + '_auto.htm'                  # не затираем вашу ручную страницу
     page = os.path.join(a.pages, name)
     with open(page, 'wb') as f:
         f.write(body)
@@ -201,7 +215,7 @@ def main():
         print('ВНИМАНИЕ: лотов мало: возможно, пришла только часть страницы. Подгрузку и пролистывание загрузчик не эмулирует.')
     if a.no_parse:
         return 0
-    return run_parser(page, day, os.path.join(a.out, day), a.marks)
+    return run_parser(page, day, os.path.join(a.out, f'{day}_{stamp}' if again else day), a.marks)
 
 
 if __name__ == '__main__':
