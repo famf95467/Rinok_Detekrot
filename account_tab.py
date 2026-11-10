@@ -3,16 +3,49 @@
 Нужен рядом funpay_manage.py (версия 2) и beautifulsoup4. Ключ golden_key хранится только в памяти;
 в golden_key.txt пишется лишь по галочке «Запомнить». Чаты и заказы не открываются.
 Правка лота: сначала «было → стало», отправка только отдельной кнопкой после этого."""
-import base64, json, os, re, secrets, threading, urllib.request
+import base64, json, os, re, secrets, threading, time, urllib.request
 from bs4 import BeautifulSoup
 import funpay_manage as fm
 
-fm.MAX_REQUESTS = 300
-fm.PACE = (3, 6)
+fm.MAX_REQUESTS = 10 ** 9          # лимит «за запуск» нужен только консольной версии
+fm.PACE = (0.8, 1.5)               # минимальный промежуток между запросами
+fm.ALIASES.setdefault('secrets', r'^secrets$')
+CACHE = os.path.join(fm.HERE, 'amounts_cache.json')
+FRESH_SEC = 300
+ACACHE = {}
+
+
+def _cache_load():
+    try:
+        with open(CACHE, encoding='utf-8') as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+ACACHE.update(_cache_load())
+
+
+def _cache_save():
+    tmp = CACHE + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(ACACHE, f, ensure_ascii=False)
+        os.replace(tmp, CACHE)
+    except OSError:
+        pass
+
+
+def is_service(section):
+    return bool(re.search(r'услуг', section or '', re.I))
+
+
 KEYFILE = os.path.join(fm.HERE, 'golden_key.txt')
 LOCK_WORDS = ('Сайт ответил HTTP', 'капч', 'перенаправил')
 UI_FIELDS = [('title', 'Название', 'entry'), ('desc', 'Описание', 'text'), ('price', 'Цена, ₽', 'entry'),
              ('amount', 'Количество', 'entry'), ('auto', 'Автовыдача', 'check'),
+             ('secrets', 'Товары автовыдачи', 'text'),
              ('active', 'Лот активен (показывается)', 'check')]
 S = {'key': None, 'me': None, 'avatar': None, 'forms': {}, 'pending': None, 'locked': False}
 LOCK = threading.Lock()
@@ -97,6 +130,15 @@ def load_offers():
                          'auto': 'да' if (it.has_attr('data-auto') or it.select_one('[class*="auto"]')) else ''})
     if not rows:
         raise fm.Stop('На странице профиля лоты не найдены: разметка другая или лотов нет.')
+    now = time.time()
+    for r in rows:
+        if is_service(r['section']):
+            r['svc'], r['amount'], r['fresh'] = True, '—', True
+            continue
+        c = ACACHE.get(r['id'])
+        if c:
+            r['amount'] = c.get('a', '')
+            r['fresh'] = now - c.get('t', 0) < FRESH_SEC
     return {'rows': rows}
 
 
@@ -124,22 +166,37 @@ def load_form(node, offer):
     return {'fields': out}
 
 
+fm.ALIASES.setdefault('secrets', r'^secrets$')
+
+
+def show(n, v):
+    # предпросмотр: список товаров автовыдачи не показываем, только число строк
+    v = str(v)
+    if re.fullmatch(r'secrets', n):
+        return f"{len([x for x in v.replace(chr(13), '').split(chr(10)) if x.strip()])} строк"
+    return fm.mask(n, v)
+
+
 def preview(offer, vals):
     d = S['forms'].get(offer)
     if not d:
         raise fm.Stop('Форма лота не загружена. Нажмите «Изменить» заново.')
     names, sets = set(d['fields']) | set(d['boxes']), []
+    areal = find_name('auto', names)
+    auto_on = bool(vals['auto']) if 'auto' in vals else bool(areal and areal in d['fields'])
     for alias, label, kind in UI_FIELDS:
         real = find_name(alias, names)
         if not real or alias not in vals:
+            continue
+        if (alias == 'amount' and auto_on) or (alias == 'secrets' and not auto_on):
             continue
         v = vals[alias]
         if kind == 'check':
             if bool(v) != (real in d['fields']):
                 sets.append(f'{real}={"1" if v else "0"}')
         else:
-            v = str(v).strip() if kind == 'entry' else str(v)
-            if v != d['fields'].get(real, ''):
+            v = str(v).strip() if kind == 'entry' else str(v).replace('\r\n', '\n')
+            if v != d['fields'].get(real, '').replace('\r\n', '\n'):
                 sets.append(f'{real}={v}')
     if not sets:
         return {'changes': [], 'token': ''}
@@ -148,7 +205,7 @@ def preview(offer, vals):
         return {'changes': [], 'token': ''}
     token = secrets.token_hex(8)
     S['pending'] = {'id': offer, 'new': new, 'changes': changes, 'token': token}
-    return {'changes': [{'field': n, 'old': fm.mask(n, str(o)), 'new': fm.mask(n, str(w))} for n, o, w in changes],
+    return {'changes': [{'field': n, 'old': show(n, o), 'new': show(n, w)} for n, o, w in changes],
             'token': token}
 
 
@@ -157,7 +214,18 @@ def apply(offer, token):
     if not p or not d or p['id'] != offer or not secrets.compare_digest(p['token'], str(token)):
         raise fm.Stop('Нет подтверждённого предпросмотра для этого лота. Ничего не отправлено.')
     S['pending'] = None
+    sk = find_name('secrets', set(d['fields']) | set(d['boxes']))
+    if sk and any(c[0] == sk for c in p['changes']):
+        _, _, fresh_html = fm.request(d['page'], S['key'])
+        fresh = BeautifulSoup(fresh_html, 'html.parser')
+        fform = fresh.find('form', class_=re.compile('offer|edit', re.I)) or fresh.find('form')
+        if not fform:
+            raise fm.Stop('Не смог перепроверить список товаров перед отправкой. Ничего не отправлено.')
+        now = fm.form_fields(fform)[0].get(sk, '').replace('\r\n', '\n')
+        if now != d['fields'].get(sk, '').replace('\r\n', '\n'):
+            raise fm.Stop('Список товаров на сайте изменился с момента открытия формы (возможно, часть уже выдана покупателям). Ничего не отправлено, откройте лот заново.')
     status, resp = fm.submit_form(S['key'], d['form'], d['html'], p['new'], d['page'], p['changes'])
+    ACACHE.pop(offer, None)
     return {'status': status, 'resp': resp}
 
 
@@ -181,26 +249,64 @@ def raise_node(node):
         any_game = soup.find(attrs={'data-game': True})
         game = any_game.get('data-game') if any_game else None
     node_id = (btn.get('data-node') if btn is not None else None) or node
-    tok = fm.app_data(html).get('csrf-token')
-    if btn is None or not game or not tok:
+    if btn is None or not game:
         os.makedirs(os.path.join(fm.HERE, 'pages_own'), exist_ok=True)
         out = os.path.join(fm.HERE, 'pages_own', f'trade_{node}.htm')
         with open(out, 'w', encoding='utf-8') as f:
             f.write(fm.redact(html))
-        what = 'кнопка «поднять»' if btn is None else ('номер игры (data-game)' if not game else 'csrf-токен')
+        what = 'кнопка «поднять»' if btn is None else 'номер игры (data-game)'
         raise fm.Stop(f'Не нашёл: {what}. Ничего не отправлено. Страница сохранена: {out} (токены вырезаны), пришлите её мне.')
     _, _, text = fm.request('/lots/raise', S['key'],
-                            data={'game_id': str(game), 'node_id': str(node_id), 'csrf_token': tok}, referer=page)
+                            data=[('game_id', str(game)), ('node_id', str(node_id)), ('node_ids[]', str(node_id))], referer=page)
     msg, modal, err = '', False, None
     try:
         j = json.loads(text)
         msg = re.sub(r'<[^>]+>', ' ', str(j.get('msg') or ''))
         err, modal = j.get('error'), bool(j.get('modal'))
+        if j.get('wait'):
+            msg += f" (ждать примерно {int(j['wait']) // 60} мин, до {j.get('unlock_at', '?')} UTC)"
         if modal:
             msg += ' ' + re.sub(r'<[^>]+>', ' ', str(j['modal']))
     except (ValueError, AttributeError):
         msg = fm.redact(text)[:300]
     return {'node': node, 'msg': re.sub(r'\s+', ' ', msg).strip()[:400], 'modal': modal, 'error': err}
+
+
+def load_node_amounts(node):
+    # количество всех лотов раздела одним запросом: страница /lots/N/trade (колонка «Наличие»)
+    _, _, html = fm.request(f'/lots/{node}/trade', S['key'])
+    soup = BeautifulSoup(html, 'html.parser')
+    out, now = {}, time.time()
+    for it in soup.select('a.tc-item'):
+        oid = it.get('data-offer') or (it.get('href') or '').split('id=')[-1]
+        am = it.select_one('.tc-amount')
+        digits = re.sub(r'\D', '', am.get_text()) if am else ''
+        if oid and digits:
+            out[oid] = digits
+            ACACHE[oid] = {'a': digits, 't': now}
+    _cache_save()
+    return {'amounts': out}
+
+
+def load_amount(node, offer):
+    # количество одного лота из формы; при автовыдаче это число строк списка товаров, сам список не сохраняется
+    _, _, html = fm.request(f'/lots/offerEdit?node={node}&offer={offer}', S['key'])
+    soup = BeautifulSoup(html, 'html.parser')
+    form = soup.find('form', class_=re.compile('offer|edit', re.I)) or soup.find('form')
+    if not form:
+        raise fm.Stop('Форма лота не найдена, количество не загружено.')
+    fields, boxes, cbs = fm.form_fields(form)
+    names = set(fields) | set(boxes)
+    areal, sreal, mreal = find_name('auto', names), find_name('secrets', names), find_name('amount', names)
+    if areal and areal in fields and sreal:
+        val = str(len([x for x in fields.get(sreal, '').replace('\r', '').split('\n') if x.strip()]))
+    elif mreal:
+        val = str(fields.get(mreal, ''))
+    else:
+        val = ''
+    ACACHE[offer] = {'a': val, 't': time.time()}
+    _cache_save()
+    return {'amount': val}
 
 
 def status():
@@ -244,9 +350,19 @@ def handle(method, path, b):
         if not re.fullmatch(r'\d{1,8}', node):
             return 400, {'error': 'Неверный номер раздела'}
         return guarded(lambda: raise_node(node))
+    if path == '/api/acc/nodeamounts':
+        node = str(b.get('node', ''))
+        if not re.fullmatch(r'\d{1,8}', node):
+            return 400, {'error': 'Неверный номер раздела'}
+        return guarded(lambda: load_node_amounts(node))
     off = str(b.get('id', ''))
     if not re.fullmatch(r'\d{1,12}', off):
         return 400, {'error': 'Неверный ID лота'}
+    if path == '/api/acc/amount':
+        node = str(b.get('node', ''))
+        if not re.fullmatch(r'\d{1,8}', node):
+            return 400, {'error': 'Неверный номер раздела'}
+        return guarded(lambda: load_amount(node, off))
     if path == '/api/acc/form':
         node = str(b.get('node', ''))
         if not re.fullmatch(r'\d{1,8}', node):
@@ -265,7 +381,7 @@ HTML = r'''
 <h3>Вход в FunPay</h3>
 <div class="cnt">Вставьте cookie golden_key. Он даёт полный доступ к аккаунту, никому его не отправляйте. Ключ хранится только в памяти программы.</div>
 <div style="margin:10px 0"><input type="password" id="ac-key" autocomplete="off" placeholder="golden_key" style="width:100%;font:inherit;padding:5px 8px;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px"></div>
-<label><input type="checkbox" id="ac-rem"> Запомнить в golden_key.txt на этом ПК (простым текстом)</label>
+<label><input type="checkbox" id="ac-rem"> Запомнить в golden_key.txt на этом ПК (простым текстом); тогда вход будет автоматическим</label>
 <div class="bar" style="margin-top:10px"><button type="button" id="ac-btn">Войти</button>
 <button type="button" id="ac-file" style="display:none">Войти по golden_key.txt</button>
 <button type="button" id="ac-forget" style="display:none">Удалить сохранённый ключ</button></div>
@@ -273,7 +389,7 @@ HTML = r'''
 <div id="ac-main" style="display:none">
 <div class="bar"><img id="ac-ava" alt="" width="48" height="48" style="border-radius:50%;display:none">
 <div><div class="sv" id="ac-nick"></div><div class="cnt" id="ac-id"></div></div>
-<button type="button" id="ac-reload">Обновить лоты</button><button type="button" id="ac-amt" title="Открывает форму каждого лота без числа, по одному запросу с паузой">Узнать количество</button><button type="button" id="ac-out">Выйти</button>
+<button type="button" id="ac-reload">Обновить лоты</button><button type="button" id="ac-amt" title="Заново загружает количество у всех лотов, кроме услуг">Обновить количество</button><button type="button" id="ac-out">Выйти</button>
 <input type="text" id="ac-q" placeholder="Поиск по лотам" style="max-width:260px"></div>
 <div class="cnt" id="ac-sum"></div>
 <div id="ac-tbl"></div>
@@ -297,7 +413,9 @@ function loadAcc(){
     $('ac-file').style.display=s.keyfile?'inline-block':'none';
     $('ac-forget').style.display=s.keyfile?'inline-block':'none';
     if(s.locked)say('Сессия аккаунта остановлена: сайт ответил блокировкой или проверкой. Запросы отключены до перезапуска программы.',true);
-    if(!s.logged)return;
+    if(!s.logged){
+      if(s.keyfile&&!s.locked&&!AC.autoTried){AC.autoTried=true;accLogin(true);}
+      return;}
     $('ac-nick').textContent=s.nick;$('ac-id').textContent='ID: '+s.uid;
     var im=$('ac-ava');if(s.avatar){im.src=s.avatar;im.style.display='inline-block';}else im.style.display='none';
     if(!AC.rows.length)accOffers();
@@ -313,7 +431,7 @@ function accLogin(useFile){
 }
 function accOffers(){
   say('Загружаю лоты…');
-  return ap('/api/acc/offers').then(function(d){AC.rows=d.rows;accRender();say('');}).catch(function(e){say(e.message,true);});
+  return ap('/api/acc/offers').then(function(d){AC.rows=d.rows;accRender();say('');accLoadAmounts(false);}).catch(function(e){say(e.message,true);});
 }
 function accRender(){
   var q=$('ac-q').value.trim().toLowerCase(),box=$('ac-tbl');box.textContent='';
@@ -328,7 +446,7 @@ function accRender(){
     tr.appendChild(el('td','id',r.id));tr.appendChild(el('td','',r.section));tr.appendChild(el('td','',r.title));
     tr.appendChild(el('td','',r.auto==='да'?'да':'нет'));
     tr.appendChild(el('td','num',r.price));
-    tr.appendChild(el('td','num',r.amount||'нет на странице'));tb.appendChild(tr);});
+    tr.appendChild(el('td','num',r.amount||(AC.busy?'…':'—')));tb.appendChild(tr);});
   t.appendChild(tb);box.appendChild(t);
   if(!rows.length)box.appendChild(el('div','empty','Лотов нет.'));
   raiseRender();
@@ -370,23 +488,77 @@ function raiseAll(){
     raiseOne(list[i++]).then(next).catch(function(e){$('ac-raiseall').disabled=false;say(e.message,true);});
   })();
 }
+function accLines(t){return String(t||'').split(/\r?\n/).filter(function(x){return x.trim();}).length;}
+function accAmt(r,fields){
+  var on=false,sec=null,am=null;
+  fields.forEach(function(f){
+    if(f.alias==='auto')on=!!f.value;
+    if(f.alias==='secrets')sec=f.value;
+    if(f.alias==='amount')am=f.value;});
+  if(on&&sec!==null)r.amount=String(accLines(sec));
+  else if(am!==null&&am!=='')r.amount=String(am);
+}
+function accSync(E){
+  var a=E.auto,s=E.secrets,m=E.amount;
+  function upd(){
+    var on=!!(a&&a.inp.checked);
+    if(s){
+      if(!s.hint){
+        s.hint=el('div','cnt','Одна строка — один товар. Выдаются сверху вниз, выданные удаляются. Используйте \\n для переноса внутри товара.');
+        s.inp.parentNode.insertBefore(s.hint,s.inp.nextSibling);}
+      s.inp.style.display=on?'':'none';s.fh.style.display=on?'':'none';s.hint.style.display=on?'':'none';}
+    if(m&&s){
+      m.inp.disabled=on;
+      if(on)m.inp.value=String(accLines(s.inp.value));}
+  }
+  if(a)a.inp.addEventListener('change',upd);
+  if(s)s.inp.addEventListener('input',upd);
+  upd();
+}
+function accLoadAmounts(force){
+  if(AC.busy)return;
+  var todo=AC.rows.filter(function(r){return !r.svc&&(force||!r.fresh);});
+  if(!todo.length)return;
+  var nodes=[],seen={},i=0;
+  todo.forEach(function(r){r.got=false;if(r.node&&!seen[r.node]){seen[r.node]=1;nodes.push(r.node);}});
+  AC.busy=true;$('ac-amt').disabled=true;accRender();
+  function done(){AC.busy=false;$('ac-amt').disabled=false;say('');accRender();}
+  function fail(e){AC.busy=false;$('ac-amt').disabled=false;accRender();say(e.message,true);}
+  function phase2(){
+    var rest=todo.filter(function(r){return !r.got;}),j=0;
+    (function next(){
+      if(j>=rest.length){done();return;}
+      var r=rest[j++];say('Загружаю количество лота '+j+' из '+rest.length+'…');
+      ap('/api/acc/amount',{node:r.node,id:r.id}).then(function(d){
+        r.amount=d.amount;r.fresh=true;if(j%5===0)accRender();next();}).catch(fail);
+    })();
+  }
+  (function next(){
+    if(i>=nodes.length){accRender();phase2();return;}
+    var n=nodes[i++];say('Загружаю количество: раздел '+i+' из '+nodes.length+'…');
+    ap('/api/acc/nodeamounts',{node:n}).then(function(d){
+      todo.forEach(function(r){if(r.node===n&&d.amounts[r.id]!==undefined){r.amount=d.amounts[r.id];r.fresh=true;r.got=true;}});
+      accRender();next();}).catch(fail);
+  })();
+}
 function accEdit(r){
   say('Загружаю форму лота…');
-  ap('/api/acc/form',{node:r.node,id:r.id}).then(function(d){say('');d.fields.forEach(function(f){if(f.alias==='amount'&&f.value!=='')r.amount=String(f.value);});accRender();accForm(r,d.fields);}).catch(function(e){say(e.message,true);});
+  ap('/api/acc/form',{node:r.node,id:r.id}).then(function(d){say('');accAmt(r,d.fields);accRender();accForm(r,d.fields);}).catch(function(e){say(e.message,true);});
 }
 function accForm(r,fields){
-  var p=$('ac-edit'),W={};p.textContent='';p.style.display='block';
+  var p=$('ac-edit'),W={},E={};p.textContent='';p.style.display='block';
   p.appendChild(el('h3','','Лот '+r.id));
   if(!fields.length)p.appendChild(el('div','cnt','Поля формы не распознаны. Ничего не отправлено.'));
   fields.forEach(function(f){
     var w;
     if(f.kind==='check'){
       var lb=el('label'),c=el('input');c.type='checkbox';c.checked=!!f.value;lb.appendChild(c);lb.appendChild(el('span','',' '+f.label));
-      p.appendChild(lb);W[f.alias]=function(){return c.checked;};return;}
-    p.appendChild(el('div','fh',f.label));
-    if(f.kind==='text'){w=el('textarea');w.rows=8;}else{w=el('input');w.type='text';}
+      p.appendChild(lb);W[f.alias]=function(){return c.checked;};E[f.alias]={inp:c};return;}
+    var fh=el('div','fh',f.label);p.appendChild(fh);
+    if(f.kind==='text'){w=el('textarea');w.rows=(f.alias==='secrets'?12:8);}else{w=el('input');w.type='text';}
     w.value=f.value;w.style.cssText='width:100%;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;margin-bottom:6px';
-    p.appendChild(w);W[f.alias]=function(){return w.value;};});
+    p.appendChild(w);W[f.alias]=function(){return w.value;};E[f.alias]={inp:w,fh:fh};});
+  accSync(E);
   var conf=el('div'),bar=el('div','bar');
   var pv=el('button','','Проверить изменения'),cl=el('button','','Закрыть');pv.type=cl.type='button';
   cl.addEventListener('click',function(){p.style.display='none';});
@@ -432,12 +604,12 @@ function accAmounts(){
     if(i>=todo.length){$('ac-amt').disabled=false;say('Готово: количество загружено.');accRender();return;}
     var r=todo[i++];say('Загружаю количество: '+i+' из '+todo.length+'…');
     ap('/api/acc/form',{node:r.node,id:r.id}).then(function(d){
-      d.fields.forEach(function(f){if(f.alias==='amount')r.amount=String(f.value);});
+      accAmt(r,d.fields);
       accRender();next();
     }).catch(function(e){$('ac-amt').disabled=false;say(e.message,true);});
   })();
 }
-$('ac-amt').addEventListener('click',accAmounts);
+$('ac-amt').addEventListener('click',function(){accLoadAmounts(true);});
 $('ac-raiseall').addEventListener('click',raiseAll);
 $('ac-reload').addEventListener('click',accOffers);
 $('ac-q').addEventListener('input',accRender);

@@ -77,7 +77,9 @@ def request(path, key, data=None, referer=None):
     if sent:
         time.sleep(random.uniform(*PACE))
     sent += 1
-    cookie = '; '.join([f'golden_key={key}'] + [f'{k}={v}' for k, v in JAR.items()])
+    jar = {'cookie_prefs': '1'}
+    jar.update(JAR)
+    cookie = '; '.join([f'golden_key={key}'] + [f'{k}={v}' for k, v in jar.items()])
     headers = {'User-Agent': USER_AGENT, 'Accept': 'text/html,application/json;q=0.9',
                'Accept-Language': 'ru-RU,ru;q=0.9', 'Accept-Encoding': 'gzip', 'Cookie': cookie}
     body = None
@@ -101,16 +103,21 @@ def request(path, key, data=None, referer=None):
             raw = gzip.decompress(raw)
         except OSError:
             pass
+    names = []
     for c in hdr.get_all('Set-Cookie') or []:
-        m = re.match(r'\s*(PHPSESSID)=([^;]*)', c)
-        if m:
+        m = re.match(r'\s*([A-Za-z0-9_.\-]+)=([^;]*)', c)
+        if m and m.group(1) not in ('golden_key', 'fav_games') and m.group(2):
             JAR[m.group(1)] = m.group(2)
-    log(('POST ' if data is not None else '') + path, status)
+            names.append(m.group(1))
+    log(('POST ' if data is not None else '') + path + (' [Set-Cookie: ' + ','.join(names) + ']' if names else ''), status)
     text = raw.decode('utf-8', 'replace')
     if status in BLOCK:
         raise Stop(f'Сайт ответил HTTP {status}: похоже на блокировку или защиту. Ничего не повторяю.')
     if status != 200:
-        raise Stop(f'Неожиданный ответ HTTP {status}. Ответ: {redact(text)[:300]}')
+        shown = '; '.join(f'{k}: {str(v)[:80]}' for k, v in hdr.items()
+                          if k.lower() not in ('set-cookie', 'cookie', 'authorization'))
+        raise Stop(f'Неожиданный ответ HTTP {status} на {"POST " if data is not None else ""}{path}. '
+                   f'Тело ответа: {redact(text)[:300] or "(пустое)"}. Заголовки: {shown[:700]}')
     if re.search(CAPTCHA, text[:300000], re.I) and 'data-app-data' not in text[:5000]:
         raise Stop('Сайт показывает капчу или проверку. Скрипт её не обходит.')
     if data is None and urlparse(final).path.rstrip('/') != urlparse(path).path.rstrip('/'):

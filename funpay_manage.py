@@ -39,6 +39,7 @@ BLOCK = {401, 403, 407, 429, 451, 503} | set(range(520, 530))
 CAPTCHA = r'captcha|cf-chl|just a moment|attention required|ddos-guard|проверка браузера|вы не робот'
 HERE = os.path.dirname(os.path.abspath(__file__))
 sent = 0
+last_ts = 0.0
 
 
 class Stop(Exception):
@@ -71,13 +72,18 @@ JAR = {}
 def request(path, key, data=None, referer=None):
     """GET, а при data POST. Шлёт golden_key и сессионную cookie PHPSESSID (если сайт её выдал).
     Возвращает (статус, итоговый путь, текст)."""
-    global sent
+    global sent, last_ts
     if sent >= MAX_REQUESTS:
         raise Stop('Лимит запросов за запуск исчерпан.')
     if sent:
-        time.sleep(random.uniform(*PACE))
+        gap = random.uniform(*PACE) - (time.time() - last_ts)
+        if gap > 0:
+            time.sleep(gap)
     sent += 1
-    cookie = '; '.join([f'golden_key={key}'] + [f'{k}={v}' for k, v in JAR.items()])
+    last_ts = time.time()
+    jar = {'cookie_prefs': '1'}
+    jar.update(JAR)
+    cookie = '; '.join([f'golden_key={key}'] + [f'{k}={v}' for k, v in jar.items()])
     headers = {'User-Agent': USER_AGENT, 'Accept': 'text/html,application/json;q=0.9',
                'Accept-Language': 'ru-RU,ru;q=0.9', 'Accept-Encoding': 'gzip', 'Cookie': cookie}
     body = None
@@ -101,11 +107,13 @@ def request(path, key, data=None, referer=None):
             raw = gzip.decompress(raw)
         except OSError:
             pass
+    names = []
     for c in hdr.get_all('Set-Cookie') or []:
-        m = re.match(r'\s*(PHPSESSID)=([^;]*)', c)
-        if m:
+        m = re.match(r'\s*([A-Za-z0-9_.\-]+)=([^;]*)', c)
+        if m and m.group(1) not in ('golden_key', 'fav_games') and m.group(2):
             JAR[m.group(1)] = m.group(2)
-    log(('POST ' if data is not None else '') + path, status)
+            names.append(m.group(1))
+    log(('POST ' if data is not None else '') + path + (' [Set-Cookie: ' + ','.join(names) + ']' if names else ''), status)
     text = raw.decode('utf-8', 'replace')
     if status in BLOCK:
         raise Stop(f'Сайт ответил HTTP {status}: похоже на блокировку или защиту. Ничего не повторяю.')
