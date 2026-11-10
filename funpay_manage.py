@@ -110,7 +110,10 @@ def request(path, key, data=None, referer=None):
     if status in BLOCK:
         raise Stop(f'Сайт ответил HTTP {status}: похоже на блокировку или защиту. Ничего не повторяю.')
     if status != 200:
-        raise Stop(f'Неожиданный ответ HTTP {status}. Ответ: {redact(text)[:300]}')
+        shown = '; '.join(f'{k}: {str(v)[:80]}' for k, v in hdr.items()
+                          if k.lower() not in ('set-cookie', 'cookie', 'authorization'))
+        raise Stop(f'Неожиданный ответ HTTP {status} на {"POST " if data is not None else ""}{path}. '
+                   f'Тело ответа: {redact(text)[:300] or "(пустое)"}. Заголовки: {shown[:700]}')
     if re.search(CAPTCHA, text[:300000], re.I) and 'data-app-data' not in text[:5000]:
         raise Stop('Сайт показывает капчу или проверку. Скрипт её не обходит.')
     if data is None and urlparse(final).path.rstrip('/') != urlparse(path).path.rstrip('/'):

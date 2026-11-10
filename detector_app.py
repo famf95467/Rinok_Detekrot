@@ -61,7 +61,7 @@ EXIT_TEXT = {
 }
 HOST = '127.0.0.1'
 PORTS = list(range(8765, 8786))        # сначала эти порты, если все заняты: любой свободный
-VERSION = '0.8'
+VERSION = '0.9'
 
 try:
     import parse_category as pc
@@ -73,6 +73,7 @@ except ImportError as e:
     sys.exit(1)
 
 MARK_VALUES = pc.MARK_VALUES            # ('скрипт', 'ниша', 'нет')
+import account_tab as acc          # вкладка «Аккаунт»
 MARKS_LOCK = threading.Lock()
 _cache = {}                              # (путь, время изменения) -> (неподтверждённые лоты, всего лотов)
 _names = {}                              # id -> название, для записи в marks.csv
@@ -1335,14 +1336,17 @@ function show(v){
   $('v-prices').style.display=(v==='prices')?'block':'none';
   $('v-data').style.display=(v==='data')?'block':'none';
   $('v-hist').style.display=(v==='history')?'block':'none';
-  $('bar-snap').style.display=(v==='data'||v==='history')?'none':'flex';
+  $('v-acc').style.display=(v==='acc')?'block':'none';
+  $('bar-snap').style.display=(v==='data'||v==='history'||v==='acc')?'none':'flex';
   $('tab-marks').className='tab'+(v==='marks'?' cur':'');
   $('tab-prices').className='tab'+(v==='prices'?' cur':'');
   $('tab-data').className='tab'+(v==='data'?' cur':'');
   $('tab-hist').className='tab'+(v==='history'?' cur':'');
+  $('tab-acc').className='tab'+(v==='acc'?' cur':'');
   if(v==='prices')loadPrices();
   if(v==='data')loadData();
   if(v==='history')loadHist();
+  if(v==='acc')loadAcc();
   try{history.replaceState(null,'','#'+v);}catch(e){}
 }
 function refresh(){load($('snap').value).then(function(){if(view==='prices')loadPrices();});}
@@ -1360,9 +1364,16 @@ $('quit').addEventListener('click',function(){
    .then(function(){document.body.textContent='Программа выключена. Эту вкладку можно закрыть.';})
    .catch(function(e){say(e.message,true);});
 });
-load('').then(function(){var h=(location.hash||'').replace('#','');show(h==='prices'||h==='data'||h==='history'?h:'marks');});
+load('').then(function(){var h=(location.hash||'').replace('#','');show(h==='prices'||h==='data'||h==='history'||h==='acc'?h:'marks');});
 })();
 </script></body></html>'''
+
+
+PAGE = (PAGE.replace('<button class="tab" id="tab-hist" type="button">История</button></nav>',
+                     '<button class="tab" id="tab-hist" type="button">История</button>'
+                     '<button class="tab" id="tab-acc" type="button">Аккаунт</button></nav>', 1)
+        .replace('</main>\n<script>', acc.HTML + '</main>\n<script>', 1)
+        .replace('/* ---------- вкладки ---------- */', acc.JS + '\n/* ---------- вкладки ---------- */', 1))
 
 
 # ---------- сервер ----------
@@ -1388,7 +1399,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy', 'no-referrer')
         # браузер не даст странице грузить ничего снаружи: ни скрипты, ни шрифты, ни картинки
         self.send_header('Content-Security-Policy',
-                         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                         "default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                          "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
@@ -1422,6 +1433,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, api_auto())
             if u.path == '/api/history':
                 return self._send(200, api_history())
+            if u.path.startswith('/api/acc/'):
+                return self._send(*acc.handle('GET', u.path, {}))
         except Exception as e:                      # ошибку разбора показываем в окне, а не молча
             import traceback
             traceback.print_exc()
@@ -1433,11 +1446,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {'error': 'Недопустимый адрес'})
         try:
             n = int(self.headers.get('Content-Length') or 0)
-            body = json.loads(self.rfile.read(min(n, 10000)) or b'{}')
+            body = json.loads(self.rfile.read(min(n, 200000)) or b'{}')
         except ValueError:
             return self._send(400, {'error': 'Непонятный запрос'})
         if not isinstance(body, dict):
             return self._send(400, {'error': 'Непонятный запрос'})
+        if self.path.startswith('/api/acc/'):
+            return self._send(*acc.handle('POST', self.path, body))
         if self.path == '/api/quit':
             self._send(200, {'ok': True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
