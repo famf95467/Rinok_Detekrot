@@ -74,6 +74,9 @@ except ImportError as e:
 
 MARK_VALUES = pc.MARK_VALUES            # ('скрипт', 'ниша', 'нет')
 import account_tab as acc          # вкладка «Аккаунт»
+import stats_tab as stats          # статистика
+import remind_tab as remind        # напоминания о подтверждении
+import chat_tab as chat            # сообщения в «Аккаунте»
 MARKS_LOCK = threading.Lock()
 _cache = {}                              # (путь, время изменения) -> (неподтверждённые лоты, всего лотов)
 _names = {}                              # id -> название, для записи в marks.csv
@@ -1376,6 +1379,19 @@ PAGE = (PAGE.replace('<button class="tab" id="tab-hist" type="button">Истор
         .replace('/* ---------- вкладки ---------- */', acc.JS + '\n/* ---------- вкладки ---------- */', 1))
 
 
+PAGE = (PAGE.replace('<div id="ac-edit"', chat.HTML + '<div id="ac-edit"', 1)
+        .replace('/* ---------- вкладки ---------- */', chat.JS + '\n/* ---------- вкладки ---------- */', 1))
+
+
+PAGE = (PAGE.replace('<div id="ac-edit"', remind.HTML + '<div id="ac-edit"', 1)
+        .replace('/* ---------- вкладки ---------- */', remind.JS + '\n/* ---------- вкладки ---------- */', 1))
+
+
+stats.CTX['prices'] = api_prices
+PAGE = (PAGE.replace('<div id="ac-edit"', stats.HTML + '<div id="ac-edit"', 1)
+        .replace('/* ---------- вкладки ---------- */', stats.JS + '\n/* ---------- вкладки ---------- */', 1))
+
+
 # ---------- сервер ----------
 class Server(ThreadingHTTPServer):
     allow_reuse_address = False         # на Windows иначе можно занять уже занятый порт
@@ -1451,6 +1467,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {'error': 'Непонятный запрос'})
         if not isinstance(body, dict):
             return self._send(400, {'error': 'Непонятный запрос'})
+        if self.path.startswith('/api/chat/'):
+            return self._send(*chat.handle('POST', self.path, body))
+        if self.path.startswith('/api/remind/'):
+            return self._send(*remind.handle('POST', self.path, body))
+        if self.path.startswith('/api/stat/'):
+            return self._send(*stats.handle('POST', self.path, body))
         if self.path.startswith('/api/acc/'):
             return self._send(*acc.handle('POST', self.path, body))
         if self.path == '/api/quit':
