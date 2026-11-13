@@ -14,6 +14,7 @@ README.md (карта проекта для людей и агентов: чит
    6. Вкладка «Аккаунт»: лоты, форма лота, количество, поднятие (бывш. account_tab.py)
    7. Сообщения                                             (бывш. chat_tab.py)
    8. Напоминания о подтверждении                           (бывш. remind_tab.py)
+   8б. Подтверждение заказов: состояния, таймер 24 ч, тикет (этап 1)
    9. Статистика                                            (бывш. stats_tab.py)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
@@ -1968,6 +1969,10 @@ def remind_scan():
         raise SiteStop('Заказы на странице /orders/trade не найдены: разметка другая или заказов нет. '
                        'Классы на странице (без содержимого заказов): ' + class_names(soup, ('tc-', 'order'))
                        + '. Пришлите мне этот список.')
+    try:
+        conf_sync(rows, now)                    # раздел 8б: учёт заказов (строка добавлена этапом 1)
+    except Exception:
+        traceback.print_exc()
     log = remind_log_read()
     cnt = {'on_page': len(rows), 'paid': 0, 'young': 0, 'no_date': 0, 'no_buyer': 0}
     by = {}
@@ -2032,6 +2037,10 @@ def remind_send_one(buyer, template):
         for o in g['orders']:
             log['orders'][o] = int(log['orders'].get(o, 0)) + 1
         write_json_atomic(REMIND_LOG, log)
+        try:
+            conf_on_reminded(g['orders'])        # раздел 8б: фиксируем время напоминания (строка добавлена этапом 1)
+        except Exception:
+            traceback.print_exc()
         REMIND['groups'].pop(buyer, None)
     return {'note': res['note'], 'error_site': res['error_site']}
 
@@ -2047,6 +2056,462 @@ def h_remind_send(b):
 
 ROUTES_REMIND = {'GET': {}, 'POST': {'/api/remind/preview': need_login(lambda b: guarded(remind_scan)),
                                      '/api/remind/send': need_login(h_remind_send)}}
+
+
+# ===== 8б. Подтверждение заказов: состояния, таймер 24 ч, журнал, текст тикета (этап 1) ===================
+# Зачем: если покупатель забыл нажать «подтвердить», FunPay сам заказ не закрывает: нужен тикет в поддержку.
+# Здесь только учёт и подготовка текста. Ничего не отправляется ни покупателю, ни в поддержку: тикет вы
+# отправляете вручную (https://support.funpay.com/tickets/new), напоминание покупателю уходит из раздела 8.
+# Состояния: paid (оплачен) -> delivered (товар выдан) -> reminded (напоминание отправлено, время, старт таймера)
+#            -> confirmed (подтверждён). Боковое: refunded (возврат). «Не подтвердил» не хранится, а вычисляется:
+#            reminded и после последнего напоминания прошло CONF_HOURS часов. Повторное напоминание перезапускает таймер.
+#            Выдачу можно пропустить: из paid сразу в reminded (так и бывает, если заказ подхвачен автоматически).
+# Откуда берутся данные: вручную (вкладка/маршруты ниже) и автоматически из страницы /orders/trade, которую уже
+# читает раздел 8: conf_sync() заводит «Оплачен» как paid и ставит confirmed/refunded тем, что сайт показал
+# «Закрыт»/«Возврат»; conf_on_reminded() фиксирует напоминание, отправленное из раздела 8. Покупателей храним
+# только по ID (как и reminders_log.json), текст переписки не храним.
+# Тикет готовится только для заказов: reminded + прошло 24 ч + ваша отметка chat_ok («чат проверен: услуга оказана,
+# покупатель однозначно просто забыл подтвердить»). Отметку ставите вы, программа чат не читает и не проверяет.
+# Файлы: confirm_orders.json (состояния), confirm_log.csv (журнал всех действий и отказов), tickets/ (тексты тикетов).
+CONF_DB = P('confirm_orders.json')
+CONF_LOG = P('confirm_log.csv')
+TICKETS_DIR = P('tickets')
+CONF_LOCK = threading.RLock()
+CONF_HOURS = 24
+SELLER_NICK = 'TalentSeller'
+TICKET_URL = 'https://support.funpay.com/tickets/new'
+CONF_STATUS_RU = {'paid': 'оплачен', 'delivered': 'товар выдан', 'reminded': 'напоминание отправлено',
+                  'confirmed': 'подтверждён', 'refunded': 'возврат'}
+CONF_DONE = ('confirmed', 'refunded')
+
+
+def conf_load():
+    d = read_json(CONF_DB, {})
+    d.setdefault('orders', {})
+    return d
+
+
+def conf_save(d):
+    write_json_atomic(CONF_DB, d)
+
+
+def conf_log(order_id, action, detail='', ok=True):
+    """Журнал для человека (открывается в Excel). Пишутся и успехи, и отказы."""
+    new = not os.path.exists(CONF_LOG)
+    with CONF_LOCK, open(CONF_LOG, 'a', encoding='utf-8-sig', newline='') as f:
+        w = csv.writer(f, delimiter=';')
+        if new:
+            w.writerow(['время', 'заказ', 'действие', 'подробности', 'результат'])
+        w.writerow([datetime.datetime.now().isoformat(timespec='seconds'), order_id or '', action, detail, 'ок' if ok else 'отказ'])
+
+
+def conf_log_tail(order_id=None, n=200):
+    try:
+        with open(CONF_LOG, encoding='utf-8-sig', newline='') as f:
+            rows = list(csv.DictReader(f, delimiter=';'))
+    except OSError:
+        return []
+    if order_id:
+        rows = [r for r in rows if r.get('заказ') == order_id]
+    return [{'time': r.get('время', ''), 'order': r.get('заказ', ''), 'action': r.get('действие', ''),
+             'detail': r.get('подробности', ''), 'ok': r.get('результат') == 'ок'} for r in rows[-n:][::-1]]
+
+
+def conf_id(x):
+    x = str(x or '').strip().lstrip('#').strip().upper()
+    if not re.fullmatch(r'[A-Z0-9]{3,20}', x):
+        raise UserError(f'Номер заказа «{x}» выглядит неправильно (буквы и цифры, например AB12CD34, без «#»).')
+    return x
+
+
+def conf_time(s):
+    if not s:
+        return datetime.datetime.now().replace(microsecond=0)
+    s = str(s).strip().replace('T', ' ')
+    for f in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%d.%m.%Y %H:%M', '%Y-%m-%d'):
+        try:
+            return datetime.datetime.strptime(s, f)
+        except ValueError:
+            pass
+    raise UserError(f'Не понял время «{s}». Формат: ГГГГ-ММ-ДД ЧЧ:ММ (например 2026-11-13 18:30).')
+
+
+def conf_iso(dt):
+    return dt.isoformat(timespec='seconds')
+
+
+def conf_dt(s):
+    try:
+        return datetime.datetime.fromisoformat(s) if s else None
+    except ValueError:
+        return None
+
+
+def conf_human(s):
+    dt = conf_dt(s)
+    return dt.strftime('%d.%m.%Y %H:%M') if dt else '—'
+
+
+def conf_deadline(o):
+    r = conf_dt(o.get('reminder_at'))
+    return r + datetime.timedelta(hours=CONF_HOURS) if r else None
+
+
+def conf_overdue(o, now=None):
+    d = conf_deadline(o)
+    return bool(d) and o['status'] == 'reminded' and (now or datetime.datetime.now()) >= d
+
+
+def conf_left(o, now=None):
+    d = conf_deadline(o)
+    if not d or o['status'] != 'reminded':
+        return ''
+    mins = int((d - (now or datetime.datetime.now())).total_seconds() // 60)
+    if mins <= 0:
+        return f'просрочено на {-mins // 60} ч {-mins % 60} мин'
+    return f'осталось {mins // 60} ч {mins % 60} мин'
+
+
+def conf_blockers(o, now=None):
+    """Почему заказ нельзя включить в тикет (пустой список = можно)."""
+    why = []
+    if o['status'] in CONF_DONE:
+        why.append('заказ уже закрыт (' + CONF_STATUS_RU[o['status']] + ')')
+        return why
+    if o['status'] != 'reminded':
+        why.append('нет зафиксированного напоминания покупателю')
+    elif not conf_overdue(o, now):
+        why.append(f'таймер {CONF_HOURS} ч не вышел ({conf_left(o, now)})')
+    if not o.get('chat_ok'):
+        why.append('нет вашей отметки «чат проверен» (услуга оказана, покупатель однозначно забыл подтвердить)')
+    return why
+
+
+def conf_dialog_url(d, o):
+    if o.get('dialog_url'):
+        return o['dialog_url']
+    me = (ACC.get('me') or {}).get('uid') or d.get('me_uid')
+    if me and o.get('buyer') and is_id(me, 15) and is_id(o['buyer'], 15):
+        a, b = sorted((int(me), int(o['buyer'])))
+        return f'https://funpay.com/chat/?node=users-{a}-{b}'     # тот же вид адреса диалога, что в разделе 7
+    return f'https://funpay.com/orders/{o["id"]}/'                # запасной вариант: страница заказа (формат по памяти)
+
+
+def conf_view(d, o, now=None):
+    return {'id': o['id'], 'status': o['status'], 'status_ru': CONF_STATUS_RU[o['status']], 'lot': o.get('lot', ''),
+            'price': o.get('price', ''), 'buyer': o.get('buyer', ''), 'paid_at': o.get('paid_at'),
+            'delivered_at': o.get('delivered_at'), 'reminder_at': o.get('reminder_at'), 'reminders': o.get('reminders', 0),
+            'confirmed_at': o.get('confirmed_at'), 'confirmed_by': o.get('confirmed_by', ''),
+            'deadline': conf_iso(conf_deadline(o)) if conf_deadline(o) else None, 'left': conf_left(o, now),
+            'overdue': conf_overdue(o, now), 'chat_ok': bool(o.get('chat_ok')), 'dialog_url': o.get('dialog_url', ''),
+            'ticket_at': o.get('ticket_at'), 'ticket_sent_at': o.get('ticket_sent_at'), 'note': o.get('note', ''),
+            'ticket_blockers': conf_blockers(o, now)}
+
+
+def conf_refuse(order_id, action, why):
+    conf_log(order_id, action, why, ok=False)
+    raise UserError(why)
+
+
+def conf_get(d, order_id, action):
+    o = d['orders'].get(order_id)
+    if not o:
+        conf_refuse(order_id, action, f'Заказа {order_id} нет в учёте. Сначала добавьте его.')
+    return o
+
+
+def conf_new(order_id, at, lot='', price='', buyer=''):
+    return {'id': order_id, 'status': 'paid', 'lot': str(lot)[:120], 'price': str(price)[:20], 'buyer': str(buyer),
+            'paid_at': conf_iso(at) if at else None, 'delivered_at': None, 'reminder_at': None, 'reminders': 0,
+            'confirmed_at': None, 'confirmed_by': '', 'chat_ok': False, 'dialog_url': '', 'ticket_at': None,
+            'ticket_sent_at': None, 'note': ''}
+
+
+# ---------- действия (каждое под замком; отказ пишется в журнал, данные не меняются) ----------
+def conf_add(b):
+    oid = conf_id(b.get('id'))
+    buyer = str(b.get('buyer', '')).strip()
+    if buyer and not is_id(buyer, 15):
+        raise UserError('ID покупателя это число (из адреса его профиля), либо оставьте пустым.')
+    with CONF_LOCK:
+        d = conf_load()
+        if oid in d['orders']:
+            conf_refuse(oid, 'add', f'Заказ {oid} уже есть в учёте.')
+        t = conf_time(b.get('at'))
+        d['orders'][oid] = conf_new(oid, t, b.get('lot', ''), b.get('price', ''), buyer)
+        conf_save(d)
+        conf_log(oid, 'add', f'оплачен {conf_iso(t)}; лот: {b.get("lot") or "—"}; сумма: {b.get("price") or "—"}')
+    return {'id': oid}
+
+
+def conf_deliver(b):
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'deliver')
+        if o['status'] != 'paid':
+            conf_refuse(oid, 'deliver', f'Выдать можно только оплаченный заказ, сейчас: {CONF_STATUS_RU[o["status"]]}.')
+        t = conf_time(b.get('at'))
+        if conf_dt(o['paid_at']) and t < conf_dt(o['paid_at']):
+            conf_refuse(oid, 'deliver', 'Время выдачи раньше времени оплаты.')
+        o['status'], o['delivered_at'] = 'delivered', conf_iso(t)
+        conf_save(d)
+        conf_log(oid, 'deliver', f'товар выдан {conf_iso(t)}')
+    return {'id': oid}
+
+
+def conf_set_reminded(d, o, t, source):
+    """Общая часть: ручное «напоминание отправлено» и автоматическая фиксация из раздела 8."""
+    again = o['status'] == 'reminded'
+    o['status'], o['reminder_at'], o['reminders'] = 'reminded', conf_iso(t), int(o.get('reminders', 0)) + 1
+    conf_log(o['id'], 'remind', f'{"повторное " if again else ""}напоминание {conf_iso(t)} ({source}); '
+             f'таймер до {conf_iso(t + datetime.timedelta(hours=CONF_HOURS))}'
+             + ('' if o.get('delivered_at') else '; выдача не отмечена'))
+
+
+def conf_remind(b):
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'remind')
+        if o['status'] in CONF_DONE:
+            conf_refuse(oid, 'remind', f'Заказ уже закрыт ({CONF_STATUS_RU[o["status"]]}), напоминание не нужно.')
+        t = conf_time(b.get('at'))
+        floor = conf_dt(o.get('reminder_at')) or conf_dt(o.get('delivered_at')) or conf_dt(o.get('paid_at'))
+        if floor and t < floor:
+            conf_refuse(oid, 'remind', 'Время напоминания раньше предыдущего события по заказу.')
+        conf_set_reminded(d, o, t, 'вручную')
+        conf_save(d)
+    return {'id': oid}
+
+
+def conf_confirm(b):
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'confirm')
+        if o['status'] in CONF_DONE:
+            conf_refuse(oid, 'confirm', f'Заказ уже закрыт ({CONF_STATUS_RU[o["status"]]}).')
+        t = conf_time(b.get('at'))
+        late = ' (после просрочки таймера)' if conf_overdue(o, t) else ''
+        warn = ''
+        if o.get('ticket_sent_at'):
+            warn = 'тикет уже отправлен: сообщите поддержке, что покупатель подтвердил'
+        elif o.get('ticket_at'):
+            warn = 'текст тикета был подготовлен, но не отправлен: тикет больше не нужен'
+        o['status'], o['confirmed_at'], o['confirmed_by'] = 'confirmed', conf_iso(t), 'вручную'
+        conf_save(d)
+        conf_log(oid, 'confirm', f'покупатель подтвердил {conf_iso(t)}{late}' + (f'; {warn}' if warn else ''))
+    return {'id': oid, 'warn': warn}
+
+
+def conf_chat_ok(b):
+    oid = conf_id(b.get('id'))
+    off = bool(b.get('off'))
+    url = str(b.get('url', '')).strip()
+    if url and not re.match(r'https://(www\.)?funpay\.com/', url):
+        conf_refuse(oid, 'chat-ok', 'Ссылка на диалог должна начинаться с https://funpay.com/')
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'chat-ok')
+        if off:
+            o['chat_ok'] = False
+            conf_log(oid, 'chat-ok', 'отметка «чат проверен» снята')
+        else:
+            if o['status'] in CONF_DONE:
+                conf_refuse(oid, 'chat-ok', f'Заказ уже закрыт ({CONF_STATUS_RU[o["status"]]}), отметка не нужна.')
+            o['chat_ok'] = True
+            if url:
+                o['dialog_url'] = url
+            conf_log(oid, 'chat-ok', 'пользователь подтвердил: услуга оказана, из чата однозначно видно, что покупатель забыл подтвердить'
+                     + (f'; ссылка: {url}' if url else ''))
+        conf_save(d)
+    return {'id': oid}
+
+
+def conf_note(b):
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        conf_get(d, oid, 'note')['note'] = str(b.get('note', ''))[:300]
+        conf_save(d)
+        conf_log(oid, 'note', 'заметка изменена')
+    return {'id': oid}
+
+
+def conf_build_ticket(d, rows):
+    first = rows[0]['id']
+    out = [f'ТИКЕТ: заполните форму {TICKET_URL}',
+           '  Вариант: «Проблема с заказом»',
+           f'  Ваш ник (логин) на FunPay: {SELLER_NICK}',
+           f'  Номер заказа: {first}' + ('  (первый из списка, остальные в комментарии)' if len(rows) > 1 else ''),
+           '  Вы покупатель или продавец?: Продавец',
+           '  Тема заявки: Покупатель забыл подтвердить заказ', '',
+           'КОММЕНТАРИЙ (скопируйте всё, что ниже линии):', '-' * 60,
+           ('Здравствуйте! Прошу подтвердить заказ: покупатель забыл нажать кнопку подтверждения.' if len(rows) == 1 else
+            'Здравствуйте! Прошу подтвердить заказы, в которых покупатели забыли нажать кнопку подтверждения.'),
+           'Услуга оказана, по чату заказа это видно однозначно.', '']
+    for i, o in enumerate(rows, 1):
+        out.append(f'{i}. Заказ #{o["id"]}')
+        parts = [f'оплачен: {conf_human(o["paid_at"])}']
+        if o.get('delivered_at'):
+            parts.append(f'товар выдан: {conf_human(o["delivered_at"])}')
+        parts.append(f'напоминание покупателю: {conf_human(o["reminder_at"])} (прошло больше {CONF_HOURS} ч), подтверждения нет')
+        out.append('   ' + '; '.join(parts).capitalize() + '.')
+        out.append(f'   Диалог: {conf_dialog_url(d, o)}')
+    out += ['', 'Спасибо!']
+    return '\n'.join(out) + '\n'
+
+
+def conf_ticket(b):
+    """Готовит текст тикета (файл в tickets/ и текст в ответе). Без списка id берутся все готовые заказы."""
+    ids = [conf_id(i) for i in (b.get('ids') or [])]
+    again = bool(b.get('again'))
+    with CONF_LOCK:
+        d = conf_load()
+        cand = [conf_get(d, i, 'ticket') for i in ids] if ids else \
+            sorted((o for o in d['orders'].values() if o['status'] == 'reminded'), key=lambda o: o['reminder_at'] or '')
+        ready, skipped = [], []
+        for o in cand:
+            why = conf_blockers(o)
+            if o.get('ticket_sent_at'):
+                why.append('тикет уже отправлен')
+            elif o.get('ticket_at') and not again:
+                why.append('текст тикета уже готовили (чтобы повторить, включите «повторить»)')
+            if why:
+                skipped.append({'id': o['id'], 'why': why})
+                if ids:                       # молча пропущенные при общем запросе не засоряют журнал
+                    conf_log(o['id'], 'ticket-skipped', '; '.join(why), ok=False)
+            else:
+                ready.append(o)
+        res = {'ready': [o['id'] for o in ready], 'skipped': skipped, 'text': '', 'file': ''}
+        if ready:
+            now = datetime.datetime.now().replace(microsecond=0)
+            os.makedirs(TICKETS_DIR, exist_ok=True)
+            res['text'] = conf_build_ticket(d, ready)
+            res['file'] = os.path.join(TICKETS_DIR, f'ticket_{now.strftime("%Y%m%d_%H%M%S")}.txt')
+            with open(res['file'], 'w', encoding='utf-8') as f:
+                f.write(res['text'])
+            for o in ready:
+                o['ticket_at'] = conf_iso(now)
+                conf_log(o['id'], 'ticket-prepared', f'текст тикета подготовлен: {os.path.basename(res["file"])} '
+                         f'(заказов в тикете: {len(ready)}); НЕ отправлен')
+            conf_save(d)
+    return res
+
+
+def conf_ticket_sent(b):
+    ids = [conf_id(i) for i in (b.get('ids') or [])]
+    if not ids:
+        raise UserError('Не выбраны заказы.')
+    with CONF_LOCK:
+        d = conf_load()
+        for i in ids:                         # сначала проверяем все, потом пишем: либо все, либо ни одного
+            o = conf_get(d, i, 'ticket-sent')
+            if not o.get('ticket_at'):
+                conf_refuse(i, 'ticket-sent', f'По заказу {i} текст тикета не готовили.')
+            if o['status'] in CONF_DONE:
+                conf_refuse(i, 'ticket-sent', f'Заказ {i} уже закрыт, тикет не нужен.')
+        now = conf_iso(datetime.datetime.now().replace(microsecond=0))
+        for i in ids:
+            d['orders'][i]['ticket_sent_at'] = now
+            conf_log(i, 'ticket-sent', 'пользователь отметил: тикет отправлен вручную')
+        conf_save(d)
+    return {'ids': ids}
+
+
+# ---------- связь с разделом 8 (страница /orders/trade) ----------
+def conf_sync(rows, now):
+    """Вызывается из remind_scan с уже прочитанными заказами. Заводит «Оплачен» как paid; тем, что уже в учёте,
+    ставит confirmed («Закрыт») или refunded («Возврат»). Своих запросов к сайту не делает."""
+    cnt = {'new': 0, 'confirmed': 0, 'refunded': 0}
+    with CONF_LOCK:
+        d = conf_load()
+        me = (ACC.get('me') or {}).get('uid')
+        if me:
+            d['me_uid'] = str(me)
+        for r in rows:
+            if not r.get('id'):
+                continue
+            oid = r['id'].upper()
+            o = d['orders'].get(oid)
+            if o is None:
+                if r['status'] == 'paid':
+                    d['orders'][oid] = conf_new(oid, r['ts'], r['title'], r['price'] if r['price'] is not None else '', r['buyer'] or '')
+                    conf_log(oid, 'add', 'найден на странице заказов со статусом «Оплачен» (автоматически)')
+                    cnt['new'] += 1
+                continue
+            if o['status'] in CONF_DONE:
+                continue
+            if not o.get('buyer') and r.get('buyer'):
+                o['buyer'] = r['buyer']
+            if r['status'] == 'closed':
+                o['status'], o['confirmed_at'], o['confirmed_by'] = 'confirmed', conf_iso(now.replace(microsecond=0)), 'сайт: статус «Закрыт»'
+                conf_log(oid, 'confirm', 'на странице заказов статус «Закрыт» (время = когда заметили)'
+                         + ('; тикет уже отправлен: сообщите поддержке' if o.get('ticket_sent_at') else ''))
+                cnt['confirmed'] += 1
+            elif r['status'] == 'refund':
+                o['status'] = 'refunded'
+                conf_log(oid, 'refund', 'на странице заказов статус «Возврат»')
+                cnt['refunded'] += 1
+        conf_save(d)
+    return cnt
+
+
+def conf_on_reminded(order_ids):
+    """Вызывается из remind_send_one после успешной отправки напоминания: фиксирует время и запускает таймер."""
+    now = datetime.datetime.now().replace(microsecond=0)
+    with CONF_LOCK:
+        d = conf_load()
+        for oid in order_ids:
+            oid = str(oid).upper()
+            o = d['orders'].get(oid)
+            if o is None:
+                o = d['orders'][oid] = conf_new(oid, None)
+                conf_log(oid, 'add', 'заведён при отправке напоминания (дата оплаты неизвестна)')
+            if o['status'] in CONF_DONE:
+                continue
+            conf_set_reminded(d, o, now, 'отправлено из раздела «Напоминания»')
+        conf_save(d)
+
+
+# ---------- маршруты ----------
+def conf_call(fn):
+    def wrapper(b):
+        try:
+            return 200, fn(b)
+        except UserError as e:
+            return 400, {'error': str(e)}
+    return wrapper
+
+
+def h_conf_list(q):
+    show_all = str(q.get('all', '')) in ('1', 'true')
+    now = datetime.datetime.now()
+    d = conf_load()
+    rows = [conf_view(d, o, now) for o in d['orders'].values() if show_all or o['status'] not in CONF_DONE]
+    rows.sort(key=lambda r: (not r['overdue'], r['deadline'] or '9999', r['paid_at'] or ''))
+    one = str(q.get('id', ''))
+    return 200, {'hours': CONF_HOURS, 'orders': rows, 'log': conf_log_tail(one if one else None, 100),
+                 'overdue': sum(1 for r in rows if r['overdue']), 'ready': sum(1 for r in rows if not r['ticket_blockers'] and not r['ticket_sent_at'] and not r['ticket_at'])}
+
+
+def h_conf_sync(b):
+    def run():
+        _, _, html = site_request('/orders/trade', ACC['key'])
+        rows = order_items(BeautifulSoup(html, 'html.parser'), datetime.datetime.now())
+        if not rows or not any(r['has_status'] for r in rows):
+            raise SiteStop('Заказы на странице /orders/trade не найдены: разметка другая или заказов нет.')
+        return conf_sync(rows, datetime.datetime.now())
+    return guarded(run)
+
+
+ROUTES_CONFIRM = {'GET': {'/api/confirm/list': h_conf_list},
+                  'POST': {'/api/confirm/add': conf_call(conf_add), '/api/confirm/deliver': conf_call(conf_deliver),
+                           '/api/confirm/remind': conf_call(conf_remind), '/api/confirm/confirm': conf_call(conf_confirm),
+                           '/api/confirm/chat-ok': conf_call(conf_chat_ok), '/api/confirm/note': conf_call(conf_note),
+                           '/api/confirm/ticket': conf_call(conf_ticket), '/api/confirm/ticket-sent': conf_call(conf_ticket_sent),
+                           '/api/confirm/sync': need_login(h_conf_sync)}}
 
 
 # ===== 9. Статистика ===================================================================================
@@ -2277,7 +2742,7 @@ ROUTES_STATS = {'GET': {}, 'POST': {'/api/stat/report': h_stat_report, '/api/sta
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
 # в своём разделе; здесь они склеиваются. Обработчик: функция(body_или_query: dict) -> (HTTP-код, dict).
 ROUTES = {'GET': {}, 'POST': {}}
-for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_STATS):
+for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_STATS):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
 
