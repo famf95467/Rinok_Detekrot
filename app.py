@@ -15,6 +15,7 @@ README.md (карта проекта для людей и агентов: чит
    7. Сообщения                                             (бывш. chat_tab.py)
    8. Напоминания о подтверждении                           (бывш. remind_tab.py)
    8б. Подтверждение заказов: состояния, таймер 24 ч, тикет (этап 1)
+   8в. Просьба об отзыве: шаблоны на лот, одна просьба на заказ (этап 2)
    9. Статистика                                            (бывш. stats_tab.py)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
@@ -39,7 +40,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.0'
+VERSION = '1.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -2029,6 +2030,10 @@ def remind_send_one(buyer, template):
     if too_soon:
         raise SiteStop('Этому покупателю напоминание уже ушло меньше 24 часов назад. Ничего не отправлено.')
     text = template.replace('{order}', ', '.join('#' + o for o in g['orders']))
+    try:
+        tpl_save(template)
+    except OSError:
+        pass
     me = int(ACC['me']['uid'])
     node = f'users-{min(me, int(buyer))}-{max(me, int(buyer))}'
     res = chat_send(node, text)
@@ -2072,6 +2077,11 @@ ROUTES_REMIND = {'GET': {}, 'POST': {'/api/remind/preview': need_login(lambda b:
 # только по ID (как и reminders_log.json), текст переписки не храним.
 # Тикет готовится только для заказов: reminded + прошло 24 ч + ваша отметка chat_ok («чат проверен: услуга оказана,
 # покупатель однозначно просто забыл подтвердить»). Отметку ставите вы, программа чат не читает и не проверяет.
+# Проверка чатов (по кнопке «Проверить чаты»): для каждого покупателя открывается один диалог (/chat/?node=users-A-B), читается
+# ТОЛЬКО последнее сообщение. Заказ «подходит», если последнее сообщение написали вы, оно совпадает с текстом напоминания
+# (в нём есть номер заказа) и написано 24 часа назад или раньше. Если последним писал покупатель или не прошло 24 часа, не подходит.
+# Сохраняется только результат проверки (подходит / не подходит и причина) и время сообщения, текст переписки не хранится.
+# Отметку «чат проверен» при подходящем заказе ставит программа (chat_auto); это не проверка того, что услуга оказана.
 # Файлы: confirm_orders.json (состояния), confirm_log.csv (журнал всех действий и отказов), tickets/ (тексты тикетов).
 CONF_DB = P('confirm_orders.json')
 CONF_LOG = P('confirm_log.csv')
@@ -2205,6 +2215,7 @@ def conf_view(d, o, now=None):
             'deadline': conf_iso(conf_deadline(o)) if conf_deadline(o) else None, 'left': conf_left(o, now),
             'overdue': conf_overdue(o, now), 'chat_ok': bool(o.get('chat_ok')), 'dialog_url': o.get('dialog_url', ''),
             'ticket_at': o.get('ticket_at'), 'ticket_sent_at': o.get('ticket_sent_at'), 'note': o.get('note', ''),
+            'chat_check': o.get('chat_check'), 'chat_auto': bool(o.get('chat_auto')),
             'ticket_blockers': conf_blockers(o, now)}
 
 
@@ -2315,12 +2326,12 @@ def conf_chat_ok(b):
         d = conf_load()
         o = conf_get(d, oid, 'chat-ok')
         if off:
-            o['chat_ok'] = False
+            o['chat_ok'], o['chat_auto'] = False, False
             conf_log(oid, 'chat-ok', 'отметка «чат проверен» снята')
         else:
             if o['status'] in CONF_DONE:
                 conf_refuse(oid, 'chat-ok', f'Заказ уже закрыт ({CONF_STATUS_RU[o["status"]]}), отметка не нужна.')
-            o['chat_ok'] = True
+            o['chat_ok'], o['chat_auto'] = True, False
             if url:
                 o['dialog_url'] = url
             conf_log(oid, 'chat-ok', 'пользователь подтвердил: услуга оказана, из чата однозначно видно, что покупатель забыл подтвердить'
@@ -2419,6 +2430,185 @@ def conf_ticket_sent(b):
         conf_save(d)
     return {'ids': ids}
 
+# ---------- проверка чатов: последнее сообщение моё, совпадает с напоминанием, прошло 24 ч ----------
+CHECK_MAX_BUYERS = 30
+REMIND_TPL = P('reminder_templates.json')      # тексты ваших напоминаний (шаблоны, не переписка), чтобы узнавать их в чатах
+
+
+def tpl_load():
+    return [t for t in read_json(REMIND_TPL, {}).get('templates', []) if isinstance(t, str) and t.strip()]
+
+
+def tpl_save(template):
+    t = str(template).strip()
+    if not t:
+        return
+    lst = [x for x in tpl_load() if chat_norm(x) != chat_norm(t)]
+    write_json_atomic(REMIND_TPL, {'templates': ([t] + lst)[:10]})
+
+CHAT_RES_RU = {'ok': 'подходит', 'young': 'ещё нет 24 ч', 'client_last': 'последним писал покупатель',
+               'no_match': 'последнее сообщение не напоминание', 'no_time': 'время сообщения не разобрано',
+               'no_buyer': 'нет покупателя', 'no_chat': 'диалог не найден'}
+
+
+def chat_norm(s):
+    return re.sub(r'\s+', ' ', str(s).replace('\xa0', ' ')).strip().casefold()
+
+
+def chat_time(s, now):
+    """Время сообщения: «13 ноября, 22:30:52», «13 ноября 2026, 22:30», «13.11.2026, 22:30:52», «сегодня, 22:30», ISO. Не разобрали: None."""
+    s = chat_norm(s)
+    try:
+        m = re.match(r'(сегодня|вчера),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?', s)
+        if m:
+            d = now.date() - datetime.timedelta(days=1 if m.group(1) == 'вчера' else 0)
+            return datetime.datetime(d.year, d.month, d.day, int(m.group(2)), int(m.group(3)), int(m.group(4) or 0))
+        m = re.match(r'(\d{1,2})\s+([а-я]+)(?:\s+(\d{4}))?\s*(?:г\.?)?,?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?', s)
+        if m and m.group(2) in MONTHS:
+            y = int(m.group(3)) if m.group(3) else now.year
+            t = datetime.datetime(y, MONTHS[m.group(2)], int(m.group(1)), int(m.group(4)), int(m.group(5)), int(m.group(6) or 0))
+            return t.replace(year=y - 1) if (t > now and not m.group(3)) else t
+        m = re.match(r'(\d{1,2})\.(\d{2})\.(\d{2,4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?', s)
+        if m:
+            y = int(m.group(3)) + (2000 if int(m.group(3)) < 100 else 0)
+            return datetime.datetime(y, int(m.group(2)), int(m.group(1)), int(m.group(4)), int(m.group(5)), int(m.group(6) or 0))
+        m = re.match(r'(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2})(?::(\d{2}))?', s)
+        if m:
+            return datetime.datetime(*(int(x or 0) for x in m.groups()))
+    except ValueError:
+        pass
+    return None
+
+
+def remind_matches(template, text, order_id):
+    """Сообщение = текст напоминания: {order} подставлен любым списком номеров, и номер этого заказа в сообщении есть."""
+    parts = chat_norm(template).split('{order}')
+    body = chat_norm(text)
+    if re.fullmatch('.+?'.join(re.escape(p) for p in parts), body, re.S) is None:
+        return False
+    return len(parts) == 1 or ('#' + order_id.casefold()) in body
+
+
+def conf_buyer(o):
+    if o.get('buyer'):
+        return str(o['buyer'])
+    m = re.search(r'users-(\d+)-(\d+)', o.get('dialog_url', '') or '')
+    me = str((ACC.get('me') or {}).get('uid', ''))
+    if m and me in (m.group(1), m.group(2)):
+        return m.group(2) if m.group(1) == me else m.group(1)
+    return ''
+
+
+def match_hint(templates, text, order_id):
+    """Где сообщение расходится с лучшим из текстов напоминания (по 40 символов вокруг места расхождения)."""
+    body, best = chat_norm(text), (-1, '', 0)
+    for t in templates:
+        exp = chat_norm(t).replace('{order}', '#' + order_id.casefold())
+        i = 0
+        while i < min(len(exp), len(body)) and exp[i] == body[i]:
+            i += 1
+        if i > best[0]:
+            best = (i, exp, i)
+    i, exp, _ = best
+    return f'расхождение с позиции {i}: в чате «{body[i:i + 40]}», в тексте напоминания «{exp[i:i + 40]}»'
+
+
+def conf_judge(o, last, templates, now):
+    """(результат, пояснение, время сообщения или None) по последнему сообщению диалога."""
+    if not last['mine']:
+        return 'client_last', 'последнее сообщение в чате от покупателя', None
+    mt = chat_time(last['time'], now)
+    if mt is None:
+        return 'no_time', f'не разобрал время последнего сообщения («{str(last["time"])[:40]}»)', None
+    if not any(remind_matches(t, last['text'], o['id']) for t in templates):
+        return 'no_match', 'последнее сообщение ваше, но текст не совпадает с напоминанием (или в нём нет номера заказа); ' + match_hint(templates, last['text'], o['id']), mt
+    paid = conf_dt(o.get('paid_at'))
+    if paid and mt < paid - datetime.timedelta(minutes=1):
+        return 'no_match', 'напоминание написано раньше оплаты заказа', mt
+    hrs = (now - mt).total_seconds() / 3600
+    if hrs < CONF_HOURS:
+        mins = int((CONF_HOURS - hrs) * 60)
+        return 'young', f'напоминание {conf_human(conf_iso(mt))}, не прошло {CONF_HOURS} ч (осталось {mins // 60} ч {mins % 60} мин)', mt
+    return 'ok', f'последнее сообщение ваше, напоминание {conf_human(conf_iso(mt))}, прошло больше {CONF_HOURS} ч', mt
+
+
+def conf_chat_check(b):
+    template = str(b.get('template', '')).strip()
+    if not template or len(template) > MAX_REMIND_TEXT:
+        raise UserError(f'Нужен текст напоминания (до {MAX_REMIND_TEXT} символов): он берётся из вкладки «Напоминания».')
+    templates = [template] + [t for t in tpl_load() if chat_norm(t) != chat_norm(template)]
+    try:
+        tpl_save(template)                       # запоминаем: проверка и дальше узнаёт это напоминание
+    except OSError:
+        pass
+    me = str((ACC.get('me') or {}).get('uid', ''))
+    if not is_id(me, 15):
+        raise UserError('Не знаю ваш ID на FunPay. Войдите заново на вкладке «Аккаунт».')
+    now = datetime.datetime.now().replace(microsecond=0)
+    with CONF_LOCK:
+        snap = [dict(o) for o in conf_load()['orders'].values() if o['status'] not in CONF_DONE]
+    snap.sort(key=lambda o: o.get('paid_at') or '')
+    by, results = {}, {}
+    for o in snap:
+        buyer = conf_buyer(o)
+        if is_id(buyer, 15):
+            by.setdefault(buyer, []).append(o)
+        else:
+            results[o['id']] = ('no_buyer', 'у заказа нет ID покупателя: добавьте его или синхронизируйте с сайтом', None)
+    def last_check(buyer):
+        return min((o.get('chat_check') or {}).get('at', '') for o in by[buyer])
+    order = sorted(by, key=last_check)                # непроверенные первыми, затем проверенные давнее всех: лимит не зацикливается
+    buyers = order[:CHECK_MAX_BUYERS]
+    left = len(by) - len(buyers)
+    stop = None
+    for buyer in buyers:
+        node = f'users-{min(int(me), int(buyer))}-{max(int(me), int(buyer))}'
+        try:
+            msgs = chat_history(node)['messages']
+        except SiteStop as e:
+            if str(e).startswith('Сообщения в диалоге не найдены'):
+                for o in by[buyer]:
+                    results[o['id']] = ('no_chat', 'в диалоге с покупателем нет сообщений', None)
+                continue
+            stop = e
+            break
+        for o in by[buyer]:
+            results[o['id']] = conf_judge(o, msgs[-1], templates, now) if msgs else ('no_chat', 'в диалоге нет сообщений', None)
+        msgs = None                                   # текст переписки дальше не живёт
+    cnt = {'ok': 0, 'bad': 0}
+    reasons = {}
+    for _res, _d, _m in results.values():
+        reasons[CHAT_RES_RU[_res]] = reasons.get(CHAT_RES_RU[_res], 0) + 1
+    with CONF_LOCK:
+        d = conf_load()
+        for oid, (res, detail, mt) in results.items():
+            o = d['orders'].get(oid)
+            if not o or o['status'] in CONF_DONE:
+                continue
+            o['chat_check'] = {'at': conf_iso(now), 'result': res, 'text': CHAT_RES_RU[res], 'detail': detail,
+                               'msg_at': conf_iso(mt) if mt else None}
+            cnt['ok' if res == 'ok' else 'bad'] += 1
+            if res in ('ok', 'young'):                # время напоминания берём из чата: это факт, а не наша запись
+                cur = conf_dt(o.get('reminder_at'))
+                if o['status'] != 'reminded':
+                    conf_set_reminded(d, o, mt, 'по чату')
+                elif cur is None or abs((cur - mt).total_seconds()) > 600:
+                    o['reminder_at'] = conf_iso(mt)
+                    conf_log(oid, 'remind', f'время напоминания уточнено по чату: {conf_iso(mt)}')
+            if res == 'ok' and not o.get('chat_ok'):
+                o['chat_ok'], o['chat_auto'] = True, True
+                conf_log(oid, 'chat-ok', 'авто по чату: ' + detail + '. Это не проверка того, что услуга оказана')
+            elif res != 'ok' and o.get('chat_ok') and o.get('chat_auto'):
+                o['chat_ok'], o['chat_auto'] = False, False
+                conf_log(oid, 'chat-ok', 'авто-отметка снята: ' + detail)
+        conf_save(d)
+        conf_log('', 'chat-check', f'проверено покупателей: {len(buyers) - (1 if stop else 0)}, заказов: {cnt["ok"] + cnt["bad"]}: '
+                 f'подходят {cnt["ok"]}, не подходят {cnt["bad"]} (' + ', '.join(f'{k}: {v}' for k, v in reasons.items()) + ') [проверка v3]' + (f'; не проверено из-за лимита {CHECK_MAX_BUYERS}: {left}' if left else '')
+                 + ('; остановлено: ' + str(stop)[:150] if stop else ''))
+    if stop:
+        raise stop
+    return {'buyers': len(buyers), 'ok': cnt['ok'], 'bad': cnt['bad'], 'left': left, 'reasons': reasons}
+
 
 # ---------- связь с разделом 8 (страница /orders/trade) ----------
 def conf_sync(rows, now):
@@ -2492,7 +2682,7 @@ def h_conf_list(q):
     rows = [conf_view(d, o, now) for o in d['orders'].values() if show_all or o['status'] not in CONF_DONE]
     rows.sort(key=lambda r: (not r['overdue'], r['deadline'] or '9999', r['paid_at'] or ''))
     one = str(q.get('id', ''))
-    return 200, {'hours': CONF_HOURS, 'orders': rows, 'log': conf_log_tail(one if one else None, 100),
+    return 200, {'hours': CONF_HOURS, 'templates': tpl_load(), 'orders': rows, 'log': conf_log_tail(one if one else None, 100),
                  'overdue': sum(1 for r in rows if r['overdue']), 'ready': sum(1 for r in rows if not r['ticket_blockers'] and not r['ticket_sent_at'] and not r['ticket_at'])}
 
 
@@ -2511,7 +2701,518 @@ ROUTES_CONFIRM = {'GET': {'/api/confirm/list': h_conf_list},
                            '/api/confirm/remind': conf_call(conf_remind), '/api/confirm/confirm': conf_call(conf_confirm),
                            '/api/confirm/chat-ok': conf_call(conf_chat_ok), '/api/confirm/note': conf_call(conf_note),
                            '/api/confirm/ticket': conf_call(conf_ticket), '/api/confirm/ticket-sent': conf_call(conf_ticket_sent),
-                           '/api/confirm/sync': need_login(h_conf_sync)}}
+                           '/api/confirm/sync': need_login(h_conf_sync),
+                           '/api/confirm/chat-check': need_login(lambda b: guarded(lambda: conf_chat_check(b)))}}
+
+
+# ===== 8в. Просьба об отзыве и награда за отзыв 5★ (этап 2) ============================================
+# После того как заказ стал «подтверждён» (раздел 8б), покупателю можно отправить одно сообщение с просьбой об отзыве.
+# Как работает: «Обновить список» показывает подтверждённые заказы и готовый текст для каждого (локально, без запросов к сайту);
+# «Отправить» шлёт ОДНО сообщение по ОДНОМУ заказу после вашего подтверждения в окне. Автоотправки нет.
+# Шаблоны: общий + свой на лот. Лот определяется по названию в заказе: правило «если название лота содержит ...».
+#   Подстановки: {order} номер заказа, {lot} название лота, {price} сумма, {link} страница заказа (там оставляют отзыв),
+#   {reward} строка про награду (пустая, пока награда не разрешена, см. ниже). Неизвестная подстановка = отказ, ничего не уходит.
+# Защиты: на заказ одна просьба (повторно не шлём); покупателю не чаще раза в RV_GAP_H часов; нет ID покупателя = нельзя;
+#   после возврата просьбы нет; «Не просить» исключает заказ; задержка после подтверждения настраивается (по умолчанию 0 ч).
+# Награда (только за отзыв нужной оценки, по умолчанию 5★; НЕ сразу):
+#   1) в просьбе есть строка-обещание {promise} «если оставите отзыв на 5 из 5, подарю ...» (только если награда включена в правиле лота;
+#      сама награда в просьбе НЕ отправляется); условия запоминаются в заказе (review_reward) и позже не меняются;
+#   2) оценку отзыва читает кнопка «Прочитать оценку» (один запрос страницы заказа, блок .review-container) или вы вносите вручную (поле review_stars):
+#      кнопка «Показать структуру отзыва» сохраняет только блок отзыва страницы заказа (без чата), по нему делается разбор;
+#   3) награда выдаётся кнопкой «Выдать награду» (одно сообщение, после вашего подтверждения), только если награда была обещана,
+#      оценка записана и равна нужной, награда ещё не выдавалась. Повторно по заказу не выдаётся.
+#   Тип награды: «штучный» (список промокодов в review_stock.json, 1 строка = 1 штука, за отзыв уходит N первых строк, они
+#   удаляются из списка только после успешной отправки) или «бесконечный» (один и тот же текст/ссылка, список не расходуется).
+#   Коды и тексты наград в журнал не пишутся, видны только количество и остаток.
+# Данные: шаблоны и настройки в review_settings.json; список промокодов в review_stock.json (ключ = фрагмент названия лота);
+#   состояние в confirm_orders.json (поля review_at, review_key, review_skip, review_reward, review_stars, reward_at в заказе);
+#   журнал confirm_log.csv (действия review-*). Текст сообщений нигде не хранится: в журнал идёт только имя шаблона.
+REVIEW_CFG = P('review_settings.json')
+REVIEW_STOCK = P('review_stock.json')
+RV_GAP_H, RV_MAX_PER_RUN, RV_MAX_TEXT, RV_MAX_RULES = 24, 30, 1000, 50
+RV_MAX_STOCK, RV_MAX_LINE = 5000, 200
+RV_VARS = ('order', 'lot', 'price', 'link', 'promise', 'reward')   # {promise} = строка-обещание; {reward} старое имя того же
+RV_THANKS_VARS = ('order', 'stars', 'reward')
+RV_TYPES = ('stock', 'endless')
+RV_DEFAULT_TEXT = ('Здравствуйте! Спасибо за покупку, заказ {order} ({lot}). Если всё работает, оставьте, пожалуйста, '
+                   'отзыв о заказе: {link}\n{promise}\nСпасибо!')
+RV_THANKS_DEFAULT = 'Спасибо за отзыв на {stars} из 5! Ваша награда по заказу {order}:\n{reward}'
+
+
+def rv_int(v, lo, hi, what):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise UserError(f'{what}: нужно целое число от {lo} до {hi}.')
+    if not lo <= n <= hi or isinstance(v, bool):
+        raise UserError(f'{what}: нужно целое число от {lo} до {hi}.')
+    return n
+
+
+def rv_check_text(text, what, allowed=RV_VARS):
+    text = str(text or '').strip()
+    if not text or len(text) > RV_MAX_TEXT:
+        raise UserError(f'{what}: текст пустой или длиннее {RV_MAX_TEXT} символов.')
+    bad = sorted({m for m in re.findall(r'\{([^{}]*)\}', text) if m not in allowed})
+    if bad:
+        raise UserError(f'{what}: неизвестные подстановки {", ".join("{" + b + "}" for b in bad)}. Можно: '
+                        + ', '.join('{' + v + '}' for v in allowed) + '.')
+    return text
+
+
+def rv_reward(rw, what='', strict=False):
+    """Награда правила: enabled, stars (нужная оценка), units (сколько штук), type (stock|endless), endless_text, thanks."""
+    rw = rw if isinstance(rw, dict) else {}
+
+    def num(key, lo, hi, dflt, label):
+        try:
+            return rv_int(rw.get(key, dflt), lo, hi, what + label)
+        except UserError:
+            if strict:
+                raise
+            return dflt
+    typ = rw.get('type')
+    if typ not in RV_TYPES:
+        if strict and typ is not None:
+            raise UserError(f'{what}тип награды: «штучный» или «бесконечный».')
+        typ = 'stock'
+    out = {'enabled': rw.get('enabled') is True, 'stars': num('stars', 1, 5, 5, 'нужная оценка'),
+           'units': num('units', 1, 1000, 1, 'сколько штук'), 'type': typ,
+           'endless_text': str(rw.get('endless_text') or '').strip()[:RV_MAX_TEXT],
+           'thanks': str(rw.get('thanks') or '').strip()[:RV_MAX_TEXT] or RV_THANKS_DEFAULT}
+    if strict:
+        rv_check_text(out['thanks'], what + 'текст благодарности', RV_THANKS_VARS)
+        if '{reward}' not in out['thanks']:
+            raise UserError(f'{what}в тексте благодарности нет {{reward}}: покупатель не получит награду.')
+        if out['enabled'] and typ == 'endless' and not out['endless_text']:
+            raise UserError(f'{what}для бесконечной награды впишите текст или ссылку.')
+    return out
+
+
+def rv_load():
+    d = read_json(REVIEW_CFG, {})
+    lots = []
+    for r in d.get('lots', []) if isinstance(d.get('lots'), list) else []:
+        if not (isinstance(r, dict) and isinstance(r.get('match'), str) and isinstance(r.get('text'), str) and r['match'].strip()):
+            continue
+        lots.append({'match': r['match'].strip()[:80], 'text': r['text'].strip().replace('{reward}', '{promise}')[:RV_MAX_TEXT],
+                     'reward': rv_reward(r.get('reward'))})
+    text = d.get('default') if isinstance(d.get('default'), str) and d['default'].strip() else RV_DEFAULT_TEXT
+    try:
+        delay = float(d.get('delay_hours', 0))
+        delay = delay if 0 <= delay <= 168 else 0.0
+    except (TypeError, ValueError):
+        delay = 0.0
+    return {'default': text.strip().replace('{reward}', '{promise}')[:RV_MAX_TEXT], 'lots': lots, 'delay_hours': delay}
+
+
+def rv_save(b):
+    """Сохраняет шаблоны целиком."""
+    with CONF_LOCK:
+        default = rv_check_text(b.get('default'), 'Общий шаблон')
+        raw = b.get('lots') if isinstance(b.get('lots'), list) else []
+        if len(raw) > RV_MAX_RULES:
+            raise UserError(f'Правил на лот не больше {RV_MAX_RULES}.')
+        lots, seen = [], set()
+        for i, r in enumerate(raw, 1):
+            if not isinstance(r, dict):
+                raise UserError(f'Правило {i}: непонятный формат.')
+            match = str(r.get('match', '')).strip()
+            if not match or len(match) > 80:
+                raise UserError(f'Правило {i}: фрагмент названия лота пустой или длиннее 80 символов.')
+            if match.casefold() in seen:
+                raise UserError(f'Правило {i}: фрагмент «{match}» уже есть выше (сработает только первый).')
+            seen.add(match.casefold())
+            what = f'Правило {i} («{match[:30]}»): '
+            lots.append({'match': match, 'text': rv_check_text(r.get('text'), what.rstrip(': ')),
+                         'reward': rv_reward(r.get('reward'), what, strict=True)})
+        try:
+            delay = float(str(b.get('delay_hours', 0)).replace(',', '.'))
+        except ValueError:
+            raise UserError('Задержка после подтверждения: нужно число часов от 0 до 168.')
+        if not 0 <= delay <= 168:
+            raise UserError('Задержка после подтверждения: нужно число часов от 0 до 168.')
+        write_json_atomic(REVIEW_CFG, {'default': default, 'lots': lots, 'delay_hours': delay})
+        conf_log(None, 'review-settings', f'шаблоны сохранены: правил на лот {len(lots)}, задержка {delay:g} ч, '
+                 f'наград включено в правилах {sum(1 for r in lots if r["reward"]["enabled"])}')
+    return {'ok': True}
+
+
+# ---------- список промокодов (штучная награда) ----------
+def rv_stock_load():
+    out = {}
+    lots = read_json(REVIEW_STOCK, {}).get('lots')
+    for k, v in (lots.items() if isinstance(lots, dict) else []):
+        if isinstance(v, list):
+            out[str(k)] = [str(x) for x in v if str(x).strip()]
+    return out
+
+
+def rv_stock_set(b):
+    """Список промокодов правила: 1 строка = 1 штука. «Заменить» или «Добавить». Содержимое в журнал не пишется."""
+    match, append = str(b.get('match', '')).strip(), b.get('append') is True
+    lines, seen = [], set()
+    for ln in str(b.get('text', '')).splitlines():
+        s = ln.strip()
+        if not s or s in seen:
+            continue
+        if len(s) > RV_MAX_LINE:
+            raise UserError(f'Строка длиннее {RV_MAX_LINE} символов: одна строка это одна награда.')
+        seen.add(s)
+        lines.append(s)
+    with CONF_LOCK:
+        if match.casefold() not in {r['match'].casefold() for r in rv_load()['lots']}:
+            raise UserError('Сначала сохраните правило на этот лот (кнопка «Сохранить шаблоны»), потом загружайте список.')
+        st = rv_stock_load()
+        key = match.casefold()
+        if append:
+            have = st.get(key, [])
+            lines = have + [x for x in lines if x not in set(have)]
+        if len(lines) > RV_MAX_STOCK:
+            raise UserError(f'В списке не больше {RV_MAX_STOCK} строк.')
+        st[key] = lines
+        write_json_atomic(REVIEW_STOCK, {'lots': st})
+        conf_log(None, 'review-stock', f'список наград правила «{match[:30]}» {"дополнен" if append else "заменён"}: теперь {len(lines)} шт. '
+                 '(содержимое в журнал не пишется)')
+    return {'count': len(lines)}
+
+
+# ---------- просьба об отзыве ----------
+def rv_pick(cfg, lot):
+    """(текст шаблона, правило или None, имя шаблона). Первое правило, чей фрагмент есть в названии лота; иначе общий."""
+    low = (lot or '').casefold()
+    for r in cfg['lots']:
+        if r['match'].casefold() in low:
+            return r['text'], r, 'лот: ' + r['match']
+    return cfg['default'], None, 'общий'
+
+
+def rv_promise(rw):
+    if rw['type'] == 'stock':
+        return f'Если оставите отзыв на {rw["stars"]} из 5, подарю награду: {rw["units"]} шт.'
+    return f'Если оставите отзыв на {rw["stars"]} из 5, подарю бонус.'
+
+
+def rv_render(cfg, o):
+    """Готовый текст просьбы. Ничего не отправляет. Возвращает (текст, имя шаблона, обещанная награда или None)."""
+    text, rule, label = rv_pick(cfg, o.get('lot', ''))
+    rv_check_text(text, 'Шаблон ' + label)
+    promised = None
+    if rule and rule['reward']['enabled']:
+        rw = rule['reward']
+        promised = {'match': rule['match'], 'stars': rw['stars'], 'units': rw['units'] if rw['type'] == 'stock' else 0, 'type': rw['type']}
+    vals = {'order': '#' + o['id'], 'lot': o.get('lot') or 'заказ', 'price': str(o.get('price') or ''),
+            'link': f'https://funpay.com/orders/{o["id"]}/', 'promise': rv_promise(rule['reward']) if promised else ''}
+    vals['reward'] = vals['promise']                # старые шаблоны с {reward} работают как раньше
+    out = re.sub(r'\{(\w+)\}', lambda m: vals.get(m.group(1), m.group(0)), text)
+    out = re.sub(r'[ \t]+\n', '\n', out)
+    out = re.sub(r'\n{3,}', '\n\n', out).strip()
+    return out, label, promised
+
+
+def rv_last_by_buyer(d):
+    last = {}
+    for o in d['orders'].values():
+        t, b = conf_dt(o.get('review_at')), conf_buyer(o)
+        if t and b and (b not in last or t > last[b]):
+            last[b] = t
+    return last
+
+
+def rv_blockers(o, cfg, now, last):
+    """Почему просьбу нельзя отправить сейчас (пустой список = можно)."""
+    if o['status'] == 'refunded':
+        return ['по заказу возврат']
+    if o['status'] != 'confirmed':
+        return ['заказ ещё не подтверждён (' + CONF_STATUS_RU[o['status']] + ')']
+    if o.get('review_at'):
+        return ['просьба уже отправлена ' + conf_human(o['review_at'])]
+    if o.get('review_skip'):
+        return ['вы отметили «не просить»']
+    why = []
+    b = conf_buyer(o)
+    if not b:
+        why.append('неизвестен ID покупателя (нажмите «Синхронизировать с сайтом» на вкладке «Подтверждения» или впишите вручную)')
+    elif b in last and (now - last[b]).total_seconds() < RV_GAP_H * 3600:
+        why.append(f'этому покупателю уже просили отзыв меньше {RV_GAP_H} ч назад')
+    c = conf_dt(o.get('confirmed_at'))
+    if c and cfg['delay_hours'] and now < c + datetime.timedelta(hours=cfg['delay_hours']):
+        left = (c + datetime.timedelta(hours=cfg['delay_hours']) - now).total_seconds() / 3600
+        why.append(f'задержка после подтверждения: ещё {left:.1f} ч')
+    return why
+
+
+def rv_node(o):
+    buyer, me = conf_buyer(o), (ACC.get('me') or {}).get('uid')
+    if not (me and is_id(me, 15) and is_id(buyer, 15)):
+        return None
+    return f'users-{min(int(me), int(buyer))}-{max(int(me), int(buyer))}'
+
+
+def rv_reward_blockers(o, cfg):
+    """Почему награду нельзя выдать сейчас (пустой список = можно). Награда только за отзыв нужной оценки."""
+    snap = o.get('review_reward')
+    if not snap:
+        return ['в просьбе не было обещания награды']
+    if o['status'] != 'confirmed':
+        return ['заказ не в статусе «подтверждён»']
+    if o.get('reward_at'):
+        return ['награда уже выдана ' + conf_human(o['reward_at'])]
+    why = []
+    st = o.get('review_stars')
+    if st is None:
+        why.append('оценка отзыва не записана: проверьте отзыв и укажите оценку')
+    elif st != snap['stars']:
+        why.append(f'оценка {st}, для награды нужна {snap["stars"]}')
+    return why
+
+
+def rv_list(q):
+    now = datetime.datetime.now()
+    d, cfg, stock = conf_load(), rv_load(), rv_stock_load()
+    last = rv_last_by_buyer(d)
+    rows = []
+    for o in d['orders'].values():
+        if o['status'] != 'confirmed':
+            continue
+        why = rv_blockers(o, cfg, now, last)
+        try:
+            text, label, promised = rv_render(cfg, o)
+        except UserError as e:
+            text, label, promised, why = '', '', None, why + [str(e)]
+        snap = o.get('review_reward')
+        rwhy = rv_reward_blockers(o, cfg) if snap else []
+        rows.append({'id': o['id'], 'lot': o.get('lot', ''), 'price': o.get('price', ''), 'confirmed_at': o.get('confirmed_at'),
+                     'review_at': o.get('review_at'), 'skip': bool(o.get('review_skip')), 'key': o.get('review_key') or label,
+                     'text': text, 'reward_in_text': bool(promised), 'blockers': why, 'can': not why,
+                     'stars': o.get('review_stars'), 'stars_src': o.get('review_stars_src') or '',
+                     'reward': ({'need': snap['stars'], 'units': snap['units'], 'type': snap['type'], 'at': o.get('reward_at'),
+                                 'blockers': rwhy, 'can': not rwhy} if snap else None)})
+    rows.sort(key=lambda r: (not (r['can'] or (r['reward'] and r['reward']['can'])), r['review_at'] is not None,
+                             -(conf_dt(r['confirmed_at']) or datetime.datetime.min).timestamp()))
+    log = [r for r in conf_log_tail(None, 400) if r['action'].startswith('review')][:100]
+    out_cfg = dict(cfg, stock={r['match']: len(stock.get(r['match'].casefold(), [])) for r in cfg['lots']})
+    return 200, {'settings': out_cfg, 'orders': rows[:300], 'total': len(rows), 'ready': sum(1 for r in rows if r['can']),
+                 'sent': sum(1 for r in rows if r['review_at']), 'reward_ready': sum(1 for r in rows if r['reward'] and r['reward']['can']),
+                 'max_per_run': RV_MAX_PER_RUN, 'log': log, 'vars': list(RV_VARS),
+                 'lots_seen': sorted({o.get('lot', '') for o in d['orders'].values() if o.get('lot')})[:200]}
+
+
+def rv_send(b):
+    """Одно сообщение по одному заказу. Все проверки повторяются на сервере: текст строится из шаблона, а не берётся из браузера."""
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'review-send')
+        cfg, now = rv_load(), datetime.datetime.now()
+        why = rv_blockers(o, cfg, now, rv_last_by_buyer(d))
+        if why:
+            conf_refuse(oid, 'review-send', 'просьба не отправлена: ' + '; '.join(why))
+        try:
+            text, label, promised = rv_render(cfg, o)
+        except UserError as e:
+            conf_refuse(oid, 'review-send', str(e))
+        if len(text) > MAX_CHAT_TEXT:
+            conf_refuse(oid, 'review-send', f'Готовый текст длиннее {MAX_CHAT_TEXT} символов.')
+        node = rv_node(o)
+        if not node:
+            conf_refuse(oid, 'review-send', 'Нет ID вашего аккаунта или покупателя: войдите на вкладке «Аккаунт».')
+        res = chat_send(node, text)
+        if res['error_site']:
+            conf_log(oid, 'review-send', f'сайт вернул ошибку, просьба НЕ отмечена отправленной (шаблон: {label}): {res["error_site"]}', ok=False)
+            return {'id': oid, 'sent': False, 'error_site': res['error_site'], 'note': res['note']}
+        o['review_at'], o['review_key'] = conf_iso(now.replace(microsecond=0)), label
+        if promised:
+            o['review_reward'] = promised           # условия награды фиксируются на момент просьбы
+        conf_save(d)
+        conf_log(oid, 'review-request', f'просьба об отзыве отправлена (шаблон: {label}; награда обещана: '
+                 f'{("да, за " + str(promised["stars"]) + " из 5") if promised else "нет"}; {len(text)} символов). '
+                 'Ответ сайта не толкуется: проверьте сообщение в диалоге')
+    return {'id': oid, 'sent': True, 'error_site': '', 'note': res['note']}
+
+
+def rv_skip(b):
+    oid, off = conf_id(b.get('id')), b.get('off') is True
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'review-skip')
+        if off:
+            o.pop('review_skip', None)
+        else:
+            o['review_skip'] = True
+        conf_save(d)
+        conf_log(oid, 'review-skip', 'отметка «не просить отзыв» снята' if off else 'отметка «не просить отзыв» поставлена')
+    return {'id': oid}
+
+
+# ---------- оценка отзыва и выдача награды ----------
+def rv_stars(b):
+    """Оценка отзыва, записанная вами вручную (автоматического чтения пока нет). stars=null снимает запись."""
+    oid = conf_id(b.get('id'))
+    raw = b.get('stars')
+    stars = None if raw in (None, '') else rv_int(raw, 1, 5, 'Оценка')
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'review-stars')
+        if o['status'] != 'confirmed':
+            conf_refuse(oid, 'review-stars', 'Оценку можно записать только у подтверждённого заказа.')
+        if o.get('reward_at'):
+            conf_refuse(oid, 'review-stars', 'Награда по заказу уже выдана, оценку менять нельзя.')
+        if stars is None:
+            o.pop('review_stars', None)
+        else:
+            o['review_stars'] = stars
+            o['review_stars_src'] = 'hand'
+        conf_save(d)
+        conf_log(oid, 'review-stars', 'оценка отзыва снята' if stars is None else f'оценка отзыва записана вручную: {stars} из 5')
+    return {'id': oid}
+
+
+def rv_parse_review(html, oid, buyer=''):
+    """Читает оценку отзыва со страницы заказа (блок .review-container). Ничего не угадывает.
+    Возвращает {'found': bool, 'stars': int|None, 'note': str}. Берётся только строка отзыва покупателя
+    (data-row="review"), строка «Ответ продавца» (data-row="reply") игнорируется."""
+    soup = BeautifulSoup(html, 'html.parser')
+    cont = soup.select_one('.review-container')
+    if cont is None:
+        return {'found': False, 'stars': None, 'note': 'Отзыва на странице заказа нет.'}
+    if cont.get('data-order') and cont.get('data-order') != oid:
+        return {'found': False, 'stars': None, 'note': 'Блок отзыва относится к другому заказу, не использую.'}
+    row = cont.select_one('.review-item-row[data-row="review"]')
+    if row is None:
+        return {'found': False, 'stars': None, 'note': 'Строка отзыва покупателя не найдена: отзыва нет или разметка другая.'}
+    author = str(row.get('data-author') or '')
+    if buyer and author and author != str(buyer):
+        return {'found': True, 'stars': None, 'note': f'Автор отзыва ({author}) не совпадает с покупателем заказа ({buyer}), оценку не беру.'}
+    vals = set()
+    mx = str(cont.get('data-rating-max') or '5')
+    if re.fullmatch(r'[1-5]', str(cont.get('data-rating') or '')) and mx == '5':
+        vals.add(int(cont['data-rating']))
+    for e in row.select('.rating [class*="rating"]'):
+        m = next((re.fullmatch(r'rating([1-5])', c) for c in e.get('class', []) if re.fullmatch(r'rating([1-5])', c)), None)
+        if m:
+            vals.add(int(m.group(1)))
+    if not vals:
+        return {'found': True, 'stars': None, 'note': 'Отзыв есть, но оценку разобрать не удалось (разметка другая).'}
+    if len(vals) > 1:
+        return {'found': True, 'stars': None, 'note': 'Оценка в разметке читается по-разному (' + ', '.join(map(str, sorted(vals))) + '), не записываю.'}
+    return {'found': True, 'stars': vals.pop(), 'note': ''}
+
+
+def rv_read_stars(b):
+    """Один запрос страницы заказа: прочитать оценку отзыва и записать в review_stars (источник «сайт»).
+    Покупатель может поменять оценку, поэтому перечитывание обновляет запись, пока награда не выдана. Ничего не отправляет."""
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'review-read')
+        if o['status'] != 'confirmed':
+            conf_refuse(oid, 'review-read', 'Оценку можно читать только у подтверждённого заказа.')
+        if o.get('reward_at'):
+            conf_refuse(oid, 'review-read', 'Награда по заказу уже выдана, оценку не перечитываю.')
+        buyer = str(o.get('buyer') or '')
+    _, _, html = site_request(f'/orders/{oid}/', ACC['key'])
+    res = rv_parse_review(html, oid, buyer)
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'review-read')
+        if o.get('reward_at'):
+            conf_refuse(oid, 'review-read', 'Награда по заказу уже выдана, оценку менять нельзя.')
+        old = o.get('review_stars')
+        if res['stars'] is not None:
+            o['review_stars'], o['review_stars_src'] = res['stars'], 'site'
+            conf_save(d)
+        conf_log(oid, 'review-read', (f'оценка прочитана с сайта: {res["stars"]} из 5' + (f' (было {old})' if old not in (None, res['stars']) else ''))
+                 if res['stars'] is not None else 'оценка не прочитана: ' + res['note'], ok=res['stars'] is not None or not res['found'])
+    return {'id': oid, 'found': res['found'], 'stars': res['stars'], 'note': res['note']}
+
+
+def rv_reward_send(b):
+    """Выдача награды: одно сообщение покупателю. Только если награда обещана, оценка записана и равна нужной, награда ещё не выдавалась."""
+    oid = conf_id(b.get('id'))
+    with CONF_LOCK:
+        d = conf_load()
+        o = conf_get(d, oid, 'review-reward')
+        cfg = rv_load()
+        why = rv_reward_blockers(o, cfg)
+        if why:
+            conf_refuse(oid, 'review-reward', 'награда не выдана: ' + '; '.join(why))
+        snap = o['review_reward']
+        key = snap['match'].casefold()
+        rule = next((r for r in cfg['lots'] if r['match'].casefold() == key), None)
+        if not rule or not rule['reward']['enabled']:
+            conf_refuse(oid, 'review-reward', 'награда не выдана: правило на этот лот удалено или награда в нём выключена.')
+        stock, items = rv_stock_load(), []
+        if snap['type'] == 'stock':
+            have = stock.get(key, [])
+            if len(have) < snap['units']:
+                conf_refuse(oid, 'review-reward', f'награда не выдана: в списке осталось {len(have)} шт., нужно {snap["units"]}. Добавьте строки в список правила.')
+            items = have[:snap['units']]
+            reward_text = '\n'.join(items)
+        else:
+            reward_text = rule['reward']['endless_text']
+            if not reward_text:
+                conf_refuse(oid, 'review-reward', 'награда не выдана: у бесконечной награды пустой текст.')
+        text = re.sub(r'\{(\w+)\}', lambda m: {'order': '#' + oid, 'stars': str(snap['stars']), 'reward': reward_text}.get(m.group(1), m.group(0)),
+                      rule['reward']['thanks'])
+        if len(text) > MAX_CHAT_TEXT:
+            conf_refuse(oid, 'review-reward', f'награда не выдана: готовый текст длиннее {MAX_CHAT_TEXT} символов.')
+        node = rv_node(o)
+        if not node:
+            conf_refuse(oid, 'review-reward', 'Нет ID вашего аккаунта или покупателя: войдите на вкладке «Аккаунт».')
+        res = chat_send(node, text)
+        if res['error_site']:
+            conf_log(oid, 'review-reward', f'сайт вернул ошибку, награда НЕ отмечена выданной, список не тронут: {res["error_site"]}', ok=False)
+            return {'id': oid, 'sent': False, 'error_site': res['error_site'], 'note': res['note']}
+        left = None
+        if items:
+            stock[key] = stock[key][len(items):]
+            left = len(stock[key])
+            write_json_atomic(REVIEW_STOCK, {'lots': stock})
+        o['reward_at'] = conf_iso(datetime.datetime.now().replace(microsecond=0))
+        conf_save(d)
+        conf_log(oid, 'review-reward', f'награда выдана: тип {"штучный" if snap["type"] == "stock" else "бесконечный"}, '
+                 f'штук {len(items) or "—"}, оценка {snap["stars"]} из 5' + (f', осталось в списке {left}' if left is not None else '')
+                 + ' (коды в журнал не пишутся). Ответ сайта не толкуется: проверьте сообщение в диалоге')
+    return {'id': oid, 'sent': True, 'error_site': '', 'note': res['note']}
+
+
+def rv_inspect_order(b):
+    """Диагностика: открывает ОДНУ страницу заказа и сохраняет только блоки с классами review/rating/star (без чата заказа),
+    чтобы по ним сделать автоматическое чтение оценки. Ничего не отправляет и не меняет."""
+    oid = conf_id(b.get('id'))
+    _, _, html = site_request(f'/orders/{oid}/', ACC['key'])
+    soup = BeautifulSoup(html, 'html.parser')
+    pat, chosen, parts, names = r'review|rating|star', set(), [], set()
+    for e in soup.find_all(True):
+        cls = e.get('class', [])
+        if not re.search(pat, ' '.join(cls), re.I) or any(id(p) in chosen for p in e.parents):
+            continue
+        chosen.add(id(e))
+        parts.append(str(e)[:3000])
+    for e in soup.find_all(True):
+        for c in e.get('class', []):
+            if re.search(pat, c, re.I):
+                names.add(c)
+    if not parts:
+        raise SiteStop('На странице заказа блок отзыва не найден: отзыва ещё нет или разметка другая. Классы страницы (без текста): '
+                       + class_names(soup, ('order', 'review', 'rating', 'tc-')) + '. Пришлите мне этот список.')
+    os.makedirs(PAGES_OWN, exist_ok=True)
+    path = os.path.join(PAGES_OWN, f'order_review_{oid}.html')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(redact('\n<!-- ---- -->\n'.join(parts)))
+    conf_log(oid, 'review-inspect', f'сохранены блоки отзыва со страницы заказа: {os.path.basename(path)} (блоков {len(parts)}, чат не сохраняется)')
+    return {'path': path, 'blocks': len(parts), 'classes': sorted(names)[:60]}
+
+
+ROUTES_REVIEW = {'GET': {'/api/review/list': rv_list},
+                 'POST': {'/api/review/settings': conf_call(rv_save),
+                          '/api/review/skip': conf_call(rv_skip), '/api/review/stars': conf_call(rv_stars),
+                          '/api/review/read-stars': need_login(lambda b: guarded(lambda: rv_read_stars(b))),
+                          '/api/review/stock': conf_call(rv_stock_set),
+                          '/api/review/send': need_login(lambda b: guarded(lambda: rv_send(b))),
+                          '/api/review/reward-send': need_login(lambda b: guarded(lambda: rv_reward_send(b))),
+                          '/api/review/inspect-order': need_login(lambda b: guarded(lambda: rv_inspect_order(b)))}}
 
 
 # ===== 9. Статистика ===================================================================================
@@ -2742,7 +3443,7 @@ ROUTES_STATS = {'GET': {}, 'POST': {'/api/stat/report': h_stat_report, '/api/sta
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
 # в своём разделе; здесь они склеиваются. Обработчик: функция(body_или_query: dict) -> (HTTP-код, dict).
 ROUTES = {'GET': {}, 'POST': {}}
-for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_STATS):
+for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_STATS):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
 
