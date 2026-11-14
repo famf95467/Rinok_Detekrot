@@ -1,0 +1,10 @@
+golden_key.txt
+*.csv
+*.json
+pages/
+pages_own/
+history/
+reports/
+tickets/
+out/
+__pycache__/

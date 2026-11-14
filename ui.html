@@ -61,6 +61,7 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <header><h1>FunPay Detector</h1><nav id="nav"></nav>
 <button id="quit" type="button">Выключить программу</button></header>
 <main>
+<div id="ap-banner" class="state bad" style="display:none;cursor:pointer" title="Открыть вкладку «Автопилот»"></div>
 <div id="msg" class="msg"></div>
 <div class="bar" id="bar-snap"><label>Страница: <select id="snap"></select></label><button id="reload" type="button">Перечитать страницу</button></div>
 
@@ -137,7 +138,7 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <div id="rm-main"><div class="box"><div class="cnt">Находит оплаченные заказы старше суток и позволяет напомнить покупателю подтвердить заказ. Каждое сообщение отправляете вы сами, по кнопке и после подтверждения. Лимиты на напоминания ставит программа.</div>
 <div class="fh" style="margin-top:8px">Текст напоминания ({order} заменится на номера заказов)</div>
 <textarea id="rm-text" rows="3" class="full" maxlength="1000">Здравствуйте! Заказ {order} оплачен. Если всё получили и всё в порядке, пожалуйста, подтвердите выполнение заказа. Спасибо!</textarea>
-<div class="bar"><button type="button" id="rm-scan">Найти заказы</button></div></div>
+<div class="bar"><button type="button" id="rm-scan">Найти заказы</button><button type="button" id="rm-all" disabled>Напомнить всем</button></div></div>
 <div class="sum" id="rm-sum"></div><div id="rm-tbl"></div></div></section>
 
 <section id="v-stats" style="display:none">
@@ -152,7 +153,65 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <div class="summary" id="st-cards"></div><div id="st-daily"></div>
 <h3>Лоты</h3><div id="st-lots"></div>
 <h3>Позиция цен среди скриптов</h3><div class="bar"><button type="button" id="st-pos">Показать позицию</button></div><div id="st-pos-t"></div>
-<div class="legend"><p>Данные по заказам берутся только со страницы заказов, которую вы загрузили кнопкой. Прибыль считается по вашей себестоимости и комиссии, это оценка. «Позиция» и подсказка цены — оценка по витрине, не гарантия продаж.</p></div></div></section>
+<div class="legend"><p>Данные по заказам берутся только со страницы заказов, которую вы загрузили кнопкой. Прибыль считается по вашей себестоимости и комиссии, это оценка. «Позиция» и подсказка цены — оценка по витрине, не гарантия продаж.</p></div>
+<div id="sv1">
+<h3>Статистика v1: прибыль по лотам с наградами за отзывы</h3>
+<div class="bar"><label>Период: <select id="sv-days"><option value="7">7 дней</option><option value="30" selected>30 дней</option><option value="90">90 дней</option></select></label>
+<label>Заказов за раз: <input type="number" id="sv-lim" min="1" max="50" value="20" style="width:70px"></label>
+<button type="button" id="sv-det">Загрузить детали заказов</button><button type="button" id="sv-rep">Обновить отчёт</button><button type="button" id="sv-exp">Сохранить отчёт</button><button type="button" id="sv-lots">Слияние лотов →</button></div><div id="sv-lotbox" class="box" style="display:none"></div>
+<div class="cnt">Детали заказа (ID лота и звёзды) берутся со страницы каждого заказа: по одному запросу с паузами. Уже загруженные повторно не открываются.</div>
+<div id="sv-warn"></div><div id="sv-tot"></div><h3>Подсказки <span class="lab o">оценка</span></h3><div id="sv-tips"></div>
+<h3>Лоты</h3><div id="sv-lotstbl"></div>
+<div class="legend"><p>(ф) = факт: из заказов или вашего ввода. (о) = оценка: расчёт или правило. Выручка только по «Закрыт», возвраты отдельно. Прибыль лота = выручка − комиссия − себестоимость − награды за отзывы; прочие расходы вычитаются только в итоге по магазину.</p></div>
+<pre class="log" id="sv-exp-out" style="display:none"></pre>
+<h3>Награды за отзывы</h3>
+<div class="box"><div class="fh">Заказы с 5★ на лотах с акцией, награда не выдана</div><div id="sv-pend"></div>
+<div class="fh" style="margin-top:10px">Ввод вручную</div>
+<div class="bar"><label>Заказ № <input type="text" id="rw-o" style="width:130px"></label>
+<label>Звёзды <select id="rw-s"><option>5</option><option>4</option><option>3</option><option>2</option><option>1</option></select></label>
+<label>Единиц <input type="number" id="rw-u" min="1" max="50" style="width:70px"></label><button type="button" id="rw-add">Выдано</button></div>
+<div class="cnt">Программа ничего не выдаёт сама: кнопка только записывает в журнал, что вы выдали награду.</div><div id="sv-rw"></div></div>
+<h3>Прочие расходы</h3>
+<div class="box"><div class="bar"><label>Дата <input type="text" id="ex-d" style="width:110px"></label>
+<label>Категория <select id="ex-c"></select></label><label>Сумма, ₽ <input type="text" id="ex-a" style="width:90px"></label>
+<label>Комментарий <input type="text" id="ex-m" style="width:220px" maxlength="200"></label><button type="button" id="ex-add">Записать</button></div><div id="sv-ex"></div></div>
+<h3>Настройки (пороги и награда)</h3>
+<div class="box"><div id="sv-set"></div><div class="bar"><button type="button" id="sv-setsave">Сохранить настройки</button></div>
+<div class="cnt">Акция по лоту включается датой в таблице «Лоты» (колонка «Акция с»), пустая дата = акция выключена.</div></div>
+</div></div></section>
+<section id="v-merge" style="display:none">
+<div class="box"><div class="cnt">Если лот переименовали и у него сменился ID, программа видит два разных лота: статистика и правила «слетают». Здесь вы говорите: «этот новый лот = тот старый». После слияния заказы, себестоимость, дата акции и награды старого лота считаются за новым, а в правило наград и текста добавляется название нового лота. Заказы не удаляются, слияние можно отменить кнопкой «Разъединить» (добавленный в правило фрагмент названия при этом остаётся).</div>
+<div class="bar" style="margin-top:8px"><button type="button" id="mg-load">Обновить список</button>
+<label><input type="checkbox" id="mg-offers"> добавить мои лоты с аккаунта (нужен вход, один запрос профиля)</label>
+<input type="text" id="mg-q" placeholder="Поиск по названию или ID" style="max-width:280px"></div></div>
+<div class="box"><h3 style="margin-top:0">Объединить</h3>
+<div class="fh">Старые лоты: отметьте один или несколько (их заказы и настройки перейдут к новому)</div><div class="slist" id="mg-from" style="max-height:260px"></div><div class="cnt" id="mg-cnt"></div>
+<div class="fh">Новый лот (он останется)</div><select id="mg-to" class="full"></select>
+<div class="bar"><button type="button" id="mg-go">Объединить</button></div><div class="cnt" id="mg-res"></div></div>
+<h3>Уже объединены</h3><div id="mg-done"></div>
+<h3>Все лоты</h3><div id="mg-all"></div></section>
+<section id="v-auto" style="display:none">
+<div class="state" id="ap-state">Читаю состояние…</div>
+<div class="box"><div class="cnt">Фоновый режим: пока программа открыта, раз в несколько минут сама проверяет заказы, чаты, подтверждения, оценки отзывов и статистику, готовит текст тикета. Отправка сообщений покупателям включается отдельно по каждому виду и по умолчанию выключена: пока выключено, автопилот только показывает, сколько сообщений готово. Тикет в поддержку не отправляется никогда: его отправляете вы. Лимиты, «один раз на заказ» и остаток промокодов проверяются так же, как при нажатии кнопок.</div>
+<div class="bar" style="margin-top:8px"><label><input type="checkbox" id="ap-enabled"> Автопилот включён (проверки)</label>
+<label>Цикл, минут: <input type="number" id="ap-every" min="5" max="1440" style="width:70px"></label>
+<label>Не больше сообщений за цикл (0 = без ограничения): <input type="number" id="ap-max" min="0" max="1000" style="width:70px"></label>
+<label>Брать заказы не старше, дней: <input type="number" id="ap-age" min="1" max="60" style="width:60px"></label></div>
+<div class="fh">Автоотправка (каждое сообщение уйдёт без вашего подтверждения)</div>
+<div class="bar"><label><input type="checkbox" id="ap-remind"> Напоминания покупателям</label>
+<label><input type="checkbox" id="ap-review"> Просьбы об отзыве</label>
+<label><input type="checkbox" id="ap-reward"> Награды за отзыв</label>
+<label><input type="checkbox" id="ap-ticket"> Готовить текст тикета</label> <label><input type="checkbox" id="ap-raise"> Автоматически поднимать лоты</label></div>
+<div class="fh">Автовозврат по низкой оценке (деньги уходят покупателю, отменить нельзя)</div>
+<div class="bar"><label><input type="checkbox" id="ap-refund"> Возвращать деньги</label>
+<label>если оценка ниже: <input type="number" id="ap-rbelow" min="2" max="5" style="width:55px"> звёзд</label>
+<label>и сумма заказа не больше, ₽ (0 = без ограничения): <input type="number" id="ap-rmax" min="0" style="width:90px"></label></div>
+<div class="fh">Текст напоминания ({order} заменится на номера заказов)</div>
+<textarea id="ap-text" rows="3" class="full" maxlength="1000"></textarea>
+<div class="bar"><button type="button" id="ap-save">Сохранить настройки</button><button type="button" id="ap-run">Запустить цикл сейчас</button><button type="button" id="ap-resume" style="display:none">Снять паузу отправок</button></div></div>
+<h3>Последний цикл</h3><div id="ap-steps"></div>
+<h3>Журнал автопилота</h3><div id="ap-log"></div>
+</section>
 </main>
 <section id="v-confirm" style="display:none">
 <div class="box"><div class="cnt">Учёт заказов, которые покупатель забыл подтвердить. Здесь только учёт и подготовка текста тикета: ничего не отправляется ни покупателю, ни в поддержку. Тикет вы отправляете вручную. Тикет готовится только для заказов с напоминанием, прошедшим таймером и вашей отметкой «чат проверен».</div>
@@ -181,29 +240,15 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <section id="v-review" style="display:none">
 <div class="box"><div class="cnt">Просьба об отзыве после подтверждения заказа. Список и готовые тексты строятся локально, без запросов к сайту. «Отправить» шлёт одно сообщение по одному заказу после вашего подтверждения; автоотправки нет. Один заказ получает одну просьбу, одному покупателю не чаще раза в 24 часа. Для отправки нужен вход на вкладке «Аккаунт».</div>
 <div class="bar" style="margin-top:8px"><button type="button" id="rv-reload">Обновить список</button>
-<button type="button" id="rv-all">Отправить все готовые</button><button type="button" id="rv-readall">Прочитать оценки</button><span class="cnt" id="rv-sum"></span></div></div>
-<div class="box"><h3>Шаблоны</h3>
-<div class="cnt">Подстановки: {order} номер заказа, {lot} название лота, {price} сумма, {link} страница заказа (там оставляют отзыв), {promise} строка-обещание про награду («Если оставите отзыв на 5 из 5, подарю…»): она только обещает и появляется, лишь если в правиле лота включена награда; сама награда в просьбе не отправляется, её выдаёт кнопка «Выдать награду» после того, как оценка отзыва прочитана и совпала. Правило на лот срабатывает, если название лота в заказе содержит ваш фрагмент; берётся первое подходящее, иначе общий шаблон.</div>
-<div class="fh" style="margin-top:8px">Общий шаблон</div>
+<button type="button" id="rv-all">Отправить все готовые</button><button type="button" id="rv-scan">Найти подтверждённые заказы</button><button type="button" id="rv-readall">Прочитать оценки</button><button type="button" id="rv-rwall">Выдать награду всем готовым</button><span class="cnt" id="rv-sum"></span></div></div>
+<div class="box"><h3>Шаблоны и награды</h3>
+<div class="cnt">Всё, что вы здесь меняете, сохраняется само (в папке проекта) и остаётся после закрытия программы. Подстановки в тексте просьбы: {order} номер заказа, {lot} название лота, {price} сумма, {link} страница заказа, {promise} строка про награду («Если оставите отзыв на 5 из 5, подарю…»). Строка только обещает: саму награду выдаёт кнопка «Выдать награду» после того, как оценка отзыва прочитана и совпала.</div>
+<div class="fh" style="margin-top:8px">1. Общий шаблон просьбы (для всех лотов без своего правила)</div>
 <textarea id="rv-def" rows="4" class="full" maxlength="1000"></textarea>
-<div class="bar"><label>Задержка после подтверждения, часов: <input type="number" id="rv-delay" min="0" max="168" step="0.5" style="width:80px"></label></div>
-<div class="fh">Шаблоны на лот</div>
+<div class="bar"><label>Задержка после подтверждения, часов: <input type="number" id="rv-delay" min="0" max="168" step="0.5" style="width:80px"></label><span class="cnt" id="rv-savest"></span></div>
+<div class="fh">2. Правила: свой текст и награда для выбранных лотов. Одно правило может включать несколько лотов, список промокодов у них общий.</div>
 <div id="rv-rules"></div>
-<details class="box" id="rv-bulkbox"><summary><b>Один шаблон сразу для нескольких лотов</b></summary>
-<div class="cnt" style="margin-top:6px">Отметьте лоты (список берётся с вашего аккаунта: только то, что сейчас в продаже), впишите текст и условия награды: для каждого выбранного лота появится своё правило с этим шаблоном. Уже существующие правила не затираются. Список промокодов у штучной награды свой у каждого правила: его загружают после сохранения.</div>
-<input type="text" id="rv-bq" placeholder="Поиск по названию" style="margin-top:6px;max-width:300px">
-<div class="slist" id="rv-bl" style="max-height:200px;margin-top:6px"></div>
-<div class="fh" style="margin-top:8px">Текст просьбы (подстановки: {order} {lot} {price} {link} {promise})</div>
-<textarea id="rv-bt" rows="3" class="full" maxlength="1000"></textarea>
-<div class="bar"><label><input type="checkbox" id="rv-be"> Награда за отзыв с оценкой <input type="number" id="rv-bs" min="1" max="5" value="5" style="width:60px"> из 5</label>
-<select id="rv-by"><option value="stock">Штучный (список промокодов)</option><option value="endless">Бесконечный (ссылка или текст)</option></select>
-<label>Штук: <input type="number" id="rv-bu" min="1" max="1000" value="1" style="width:70px"></label></div>
-<textarea id="rv-bx" rows="2" class="full" maxlength="1000" placeholder="Для бесконечной награды: текст или ссылка" style="display:none"></textarea>
-<div class="fh">Сообщение с наградой ({order} {stars} {reward}; {reward} обязателен)</div>
-<textarea id="rv-bh" rows="2" class="full" maxlength="1000"></textarea>
-<div class="bar"><button type="button" id="rv-badd">Создать правила для выбранных</button><span class="cnt" id="rv-bn"></span></div></details>
-<div class="bar"><button type="button" id="rv-addrule">Добавить правило на лот</button><select id="rv-pick"><option value="">Взять название из моих лотов…</option></select>
-<button type="button" id="rv-save">Сохранить шаблоны</button></div>
+<div class="bar"><button type="button" id="rv-addrule">Добавить правило</button><button type="button" id="rv-save">Сохранить сейчас</button></div>
 <div class="state bad" style="font-weight:400"><div class="cnt" style="color:inherit">Награда выдаётся не сразу, а только после отзыва нужной оценки (по умолчанию 5), и только кнопкой «Выдать награду» после вашего подтверждения. Оценка читается со страницы заказа (кнопки «Прочитать оценку»), её можно внести и вручную. Правила FunPay насчёт награды за отзыв (в том числе за конкретную оценку) проверяете вы сами.</div></div></div>
 <div class="box"><h3>Как узнать оценку отзыва</h3><div class="cnt">Оценка читается автоматически кнопками «Прочитать оценку» и «Прочитать оценки». Эта кнопка нужна только для диагностики: если оценку прочитать не удалось, она откроет одну страницу заказа и сохранит блок отзыва (без чата) в папку pages_own. Нужен вход на вкладке «Аккаунт».</div>
 <div class="bar" style="margin-top:8px"><input type="text" id="rv-insid" placeholder="Номер заказа, например N7FL7WEW" style="width:240px"><button type="button" id="rv-ins">Показать структуру отзыва</button></div><pre class="log" id="rv-insout" style="display:none"></pre></div>
@@ -212,7 +257,7 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <script>
 (function(){
 'use strict';
-var TABS=[['marks','Отметки'],['prices','Цены'],['data','Данные'],['hist','История'],['acc','Аккаунт'],['chat','Сообщения'],['remind','Напоминания'],['confirm','Подтверждения'],['review','Отзывы'],['stats','Статистика']];
+var TABS=[['marks','Отметки'],['prices','Цены'],['data','Данные'],['hist','История'],['acc','Аккаунт'],['chat','Сообщения'],['remind','Напоминания'],['confirm','Подтверждения'],['review','Отзывы'],['auto','Автопилот'],['stats','Статистика'],['merge','Слияние лотов']];
 var MARKS=['скрипт','ниша','нет'],CLS={'скрипт':'s','ниша':'n','нет':'x'};
 var lots=[],filter='none',data={},view='marks',pdata=null,pollT=null;
 function $(id){return document.getElementById(id);}
@@ -475,7 +520,7 @@ function loadAcc(){
   return api('/api/acc/status').then(function(s){
     AC.logged=s.logged;
     $('ac-login').style.display=s.logged?'none':'block';$('ac-main').style.display=s.logged?'block':'none';
-    $('ac-file').style.display=s.keyfile?'inline-block':'none';$('ac-forget').style.display=s.keyfile?'inline-block':'none';
+    $('ac-file').style.display=s.keyfile?'inline-block':'none';$('ac-forget').style.display=(s.keyfile&&!s.cloud)?'inline-block':'none';if(s.cloud&&$('quit'))$('quit').style.display='none';
     if(s.locked)say('Сессия аккаунта остановлена: сайт ответил блокировкой или проверкой. Запросы отключены до перезапуска программы.',true);
     if(!s.logged)return;
     $('ac-nick').textContent=s.nick;$('ac-id').textContent='ID: '+s.uid;
@@ -513,7 +558,7 @@ function raiseRender(){
 }
 function raiseOne(x){
   say('Поднимаю: '+x.section+'…');
-  return ap('/api/acc/raise',{node:x.node}).then(function(d){AC.rs[x.node]=new Date().toLocaleTimeString('ru-RU')+': '+(d.msg||'(пустой ответ)')+(d.modal?' [сайт просит выбрать разделы, это не поддерживается]':'');say('');raiseRender();return d;});
+  return ap('/api/acc/raise',{node:x.node}).then(function(d){AC.rs[x.node]=new Date().toLocaleTimeString('ru-RU')+': '+(d.msg||'(пустой ответ)');say('');raiseRender();return d;});
 }
 function raiseAll(){
   var list=raiseSections();if(!list.length){say('Сначала загрузите список лотов.');return;}
@@ -607,25 +652,55 @@ $('ch-send').addEventListener('click',function(){
 });
 
 /* ---------- Напоминания ---------- */
+var RM={rows:[],busy:false};
+function rmIdle(){RM.busy=false;$('rm-scan').disabled=false;$('rm-all').disabled=!RM.rows.some(function(r){return r.g.ok&&!r.done;});}
+function rmSendOne(r,text){
+  r.b.disabled=true;
+  return ap('/api/remind/send',{buyer:r.g.buyer,text:text}).then(function(x){
+    r.st.textContent=x.note||'Отправлено.';r.done=!x.error_site;if(x.error_site)r.b.disabled=false;return x;});
+}
 function remScan(){
-  say('Ищу заказы…');
+  say('Ищу заказы и проверяю чаты покупателей (один запрос на покупателя, может занять около минуты)…');
+  $('rm-all').disabled=true;
   return ap('/api/remind/preview').then(function(d){say('');var c=d.counts;
-    $('rm-sum').textContent='На странице заказов: '+c.on_page+'; оплачены и ждут подтверждения: '+c.paid+'; моложе суток: '+c.young+'; без даты: '+c.no_date+'; без покупателя: '+c.no_buyer+'. Покупателей для напоминания: '+d.groups.filter(function(g){return g.ok;}).length+'.';
-    var box=$('rm-tbl');box.textContent='';
-    if(!d.groups.length){box.appendChild(el('div','empty','Подходящих заказов нет.'));return;}
+    var okn=d.groups.filter(function(g){return g.ok;});
+    $('rm-sum').textContent='На странице заказов: '+c.on_page+'; оплачены и ждут подтверждения: '+c.paid+'; моложе суток: '+c.young+'; без даты: '+c.no_date+'; без покупателя: '+c.no_buyer+'; у поддержки (пропущено): '+c.support+'. Покупателей для напоминания: '+okn.length+'.';
+    var box=$('rm-tbl');box.textContent='';RM.rows=[];
+    if(!d.groups.length){box.appendChild(el('div','empty','Подходящих заказов нет.'));rmIdle();return;}
     var t=el('table'),th=el('thead'),hr=el('tr');['','Покупатель','Заказы','Статус'].forEach(function(h){hr.appendChild(el('th','',h));});th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
-    d.groups.forEach(function(g){var tr=el('tr'),td=el('td','btns'),st=el('td','',g.ok?'можно напомнить':g.reason);
+    d.groups.forEach(function(g){var tr=el('tr'),td=el('td','btns'),st=el('td','',g.ok?('можно напомнить'+(g.note?' ('+g.note+')':'')):g.reason);
       var b=el('button','b','Напомнить');b.type='button';b.disabled=!g.ok;
+      var r={g:g,b:b,st:st,done:false};RM.rows.push(r);
       b.addEventListener('click',function(){
+        if(RM.busy)return;
         var text=$('rm-text').value.trim();if(!text){say('Введите текст напоминания.',true);return;}
         if(!confirm('Отправить напоминание покупателю «'+g.name+'» по заказам: '+g.orders.map(function(o){return '#'+o.id;}).join(', ')+'?'))return;
-        b.disabled=true;ap('/api/remind/send',{buyer:g.buyer,text:text}).then(function(r){say('');st.textContent=r.note||'Отправлено.';}).catch(function(e){say(e.message,true);b.disabled=false;});});
+        rmSendOne(r,text).then(function(){say('');rmIdle();}).catch(function(e){say(e.message,true);b.disabled=false;});});
       td.appendChild(b);tr.appendChild(td);tr.appendChild(el('td','',g.name));
       var otd=el('td','');otd.style.whiteSpace='pre-line';g.orders.forEach(function(o,k){if(k)otd.appendChild(document.createTextNode('\n'));otd.appendChild(ordLink(o.id));otd.appendChild(document.createTextNode(' ('+o.age+' ч'+(o.sent?', напоминаний '+o.sent:'')+') '+o.title));});tr.appendChild(otd);tr.appendChild(st);tb.appendChild(tr);});
-    t.appendChild(tb);box.appendChild(t);
-  }).catch(function(e){say(e.message,true);});
+    t.appendChild(tb);box.appendChild(t);rmIdle();
+  }).catch(function(e){say(e.message,true);rmIdle();});
+}
+function remAll(){
+  if(RM.busy)return;
+  var text=$('rm-text').value.trim();if(!text){say('Введите текст напоминания.',true);return;}
+  var todo=RM.rows.filter(function(r){return r.g.ok&&!r.done;});
+  if(!todo.length){say('Некому напоминать: сначала нажмите «Найти заказы».');return;}
+  var n=0;todo.forEach(function(r){n+=r.g.orders.length;});
+  if(!confirm('Отправить напоминание '+todo.length+' покупателям (заказов: '+n+')?\n\nТекст:\n'+text.slice(0,300)+'\n\nСообщения уходят по одному, с паузами, примерно '+Math.max(1,Math.ceil(todo.length*5/60))+' мин. При первой ошибке остановлюсь.'))return;
+  RM.busy=true;$('rm-all').disabled=true;$('rm-scan').disabled=true;
+  var i=0,sent=0;
+  (function next(){
+    if(i>=todo.length){rmIdle();say('Готово: отправлено '+sent+' из '+todo.length+'. Ответ сайта в таблице, проверьте чаты.');return;}
+    var r=todo[i++];say('Отправляю '+i+' из '+todo.length+': '+r.g.name+'…');
+    rmSendOne(r,text).then(function(x){
+      if(x.error_site){rmIdle();say('Остановился: сайт вернул ошибку ('+x.error_site+'). Отправлено '+sent+' из '+todo.length+'.',true);return;}
+      sent++;next();
+    }).catch(function(e){r.b.disabled=false;rmIdle();say('Остановился на «'+r.g.name+'»: '+e.message+' Отправлено '+sent+' из '+todo.length+'.',true);});
+  })();
 }
 $('rm-scan').addEventListener('click',remScan);
+$('rm-all').addEventListener('click',remAll);
 
 /* ---------- Статистика ---------- */
 function stReport(){
@@ -643,7 +718,7 @@ function stReport(){
     var box=$('st-lots');box.textContent='';
     if(!d.lots.length){box.appendChild(el('div','empty','За период заказов нет.'));return;}
     var t=el('table'),th=el('thead'),hr=el('tr');['Лот','Вып.','Оплач.','Возвр.','Выручка','Ожид.','За 7 дн.','Себестоимость, ₽','Прибыль, ₽','Метки'].forEach(function(h,i){hr.appendChild(el('th',(i>0&&i<9)?'num':'',h));});th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
-    d.lots.forEach(function(r){var tr=el('tr');tr.appendChild(el('td','',r.title));[r.closed,r.paid,r.refund,money(r.rev),money(r.pending),r.n7].forEach(function(v){tr.appendChild(el('td','num',String(v)));});
+    d.lots.forEach(function(r){var tr=el('tr');var tt=el('td','',r.title);tt.appendChild(el('span','tag',r.lot_id?('ID '+r.lot_id):'без ID: детали заказов не загружены, считается по названию'));tr.appendChild(tt);[r.closed,r.paid,r.refund,money(r.rev),money(r.pending),r.n7].forEach(function(v){tr.appendChild(el('td','num',String(v)));});
       var cs=el('td','num'),i=el('input');i.type='number';i.min='0';i.style.width='90px';i.value=(r.cost===null||r.cost===undefined)?'':r.cost;
       i.addEventListener('change',function(){ap('/api/stat/cost',{title:r.title,cost:i.value}).then(function(){say('');return stReport();}).catch(function(e){say(e.message,true);});});
       cs.appendChild(i);tr.appendChild(cs);tr.appendChild(el('td','num',money(r.profit)));tr.appendChild(el('td','',r.tags));tb.appendChild(tr);});
@@ -765,13 +840,20 @@ var RV={cfg:null,orders:[],lots:[],rules:[]};
 function rvLoad(){
   return api('/api/review/list').then(function(d){
     RV.cfg=d.settings;RV.orders=d.orders;RV.lots=d.lots_seen||[];
-    $('rv-sum').textContent='Подтверждённых заказов: '+d.total+'. Готовы к просьбе: '+d.ready+'. Просьба отправлена: '+d.sent+'. Готовы к выдаче награды: '+d.reward_ready+'.'+(d.total>d.orders.length?' Показаны первые '+d.orders.length+'.':'');
+    $('rv-sum').textContent='Подтверждённых заказов: '+d.total+'. Готовы к просьбе: '+d.ready+'. Просьба отправлена: '+d.sent+'. Готовы к выдаче награды: '+d.reward_ready+'.'+rvCostText(d.costs)+(d.total>d.orders.length?' Показаны первые '+d.orders.length+'.':'');
     $('rv-def').value=d.settings.default;$('rv-delay').value=d.settings.delay_hours;
-    rvFillPick();
     RV.rules=d.settings.lots.map(function(r){return JSON.parse(JSON.stringify(r));});
-    rvRules();rvBulkInit();rvRender();rvLog(d.log);
+    rvRules();rvRender();rvLog(d.log);
     if(!AC.rows.length&&!RV.triedMy){RV.triedMy=true;rvEnsureMyLots();}
   }).catch(function(e){say(e.message,true);});
+}
+function rvCostText(c){
+  if(!c||(!c.given_n&&!c.ready_n))return '';
+  var m=function(v){return Number(v).toLocaleString('ru-RU',{maximumFractionDigits:2});};
+  var t=' Расходы на награды: выдано '+c.given_n+' ('+c.given_units+' шт.) на '+m(c.spent)+' ₽'+(c.est_n?' (у '+c.est_n+' выдач, сделанных до ввода цены, по текущей цене)':'')+
+    '. Готово к выдаче: '+c.ready_units+' шт. ≈ '+m(c.ready_cost)+' ₽.';
+  if(!c.any_cost)t+=' Цена штуки не указана ни в одном правиле: впишите «Стоимость 1 шт.» в правило, тогда расходы посчитаются.';
+  return t;
 }
 function rvMyTitles(){
   var seen={},out=[];
@@ -780,94 +862,133 @@ function rvMyTitles(){
     if(t&&!seen[k]){seen[k]=1;out.push(t);}});
   return out.sort(function(a,b){return a.localeCompare(b,'ru');});
 }
-function rvFillPick(){
-  var pk=$('rv-pick');pk.textContent='';var o0=el('option','',AC.rows.length?'Взять название из моих лотов…':'Взять название из моих лотов (войдите на вкладке «Аккаунт»)…');o0.value='';pk.appendChild(o0);
-  rvMyTitles().forEach(function(t){var o=el('option','',t.slice(0,70));o.value=t;pk.appendChild(o);});
-}
 function rvEnsureMyLots(){
-  if(AC.rows.length){rvFillPick();rvBulkList();return Promise.resolve();}
-  return ap('/api/acc/offers').then(function(d){AC.rows=d.rows;rvFillPick();rvBulkList();}).catch(function(e){
-    $('rv-bn').textContent='Лоты аккаунта не загружены: '+e.message;rvBulkList();});
+  if(AC.rows.length)return Promise.resolve();
+  return ap('/api/acc/offers').then(function(d){AC.rows=d.rows;rvRules();}).catch(function(e){RV.myErr=e.message;rvRules();});
 }
-function rvNewRule(match){return{match:match,text:$('rv-def').value,reward:{enabled:false,stars:5,units:1,type:'stock',endless_text:'',thanks:'Спасибо за отзыв на {stars} из 5! Ваша награда по заказу {order}:\n{reward}'}};}
+var RV_THANKS='Спасибо за отзыв на {stars} из 5! Ваша награда по заказу {order}:\n{reward}';
+function rvNewRule(){return{key:'',matches:[],text:$('rv-def').value,reward:{enabled:false,stars:5,units:1,unit_cost:0,type:'stock',endless_text:'',thanks:RV_THANKS}};}
 function rvIn(type,val,w){var i=el('input');i.type=type;i.value=val;if(w)i.style.width=w;return i;}
+/* автосохранение: правка -> через 0,7 с запись в папку проекта; при закрытии вкладки дописываем сразу */
+var RVS={t:null,dirty:false};
+function rvPayload(){return {default:$('rv-def').value,delay_hours:$('rv-delay').value,lots:RV.rules.filter(function(r){return r.matches.length;})};}
+function rvStamp(t,bad){var s=$('rv-savest');s.textContent=t;s.style.color=bad?'var(--x)':'';}
+function rvAuto(){RVS.dirty=true;rvStamp('Изменения…');clearTimeout(RVS.t);RVS.t=setTimeout(function(){rvSave(true);},700);}
+function rvSave(silent){
+  clearTimeout(RVS.t);
+  return ap('/api/review/settings',rvPayload()).then(function(){
+    RVS.dirty=false;var n=new Date();rvStamp('Сохранено '+n.toLocaleTimeString('ru-RU'));
+    if(!silent)say('Шаблоны сохранены.');return true;
+  }).catch(function(e){rvStamp('НЕ сохранено: '+e.message,true);if(!silent)say(e.message,true);return false;});
+}
+window.addEventListener('pagehide',function(){
+  if(!RVS.dirty)return;
+  try{fetch('/api/review/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rvPayload()),keepalive:true});}catch(e){}
+});
+function rvFrag(t){return t.slice(0,40).trim();}
+function rvOwner(frag,self){
+  for(var k=0;k<RV.rules.length;k++){if(RV.rules[k]===self)continue;
+    for(var m=0;m<RV.rules[k].matches.length;m++)if(RV.rules[k].matches[m].toLowerCase()===frag.toLowerCase())return k+1;}
+  return 0;
+}
 function rvRules(){
   var box=$('rv-rules');box.textContent='';
-  if(!RV.rules.length){box.appendChild(el('div','cnt','Правил на лот нет: всем отправляется общий шаблон.'));return;}
+  if(!RV.rules.length){box.appendChild(el('div','cnt','Правил нет: всем лотам отправляется общий шаблон. Нажмите «Добавить правило».'));return;}
   RV.rules.forEach(function(r,i){
-    var w=el('div','box'),m=rvIn('text',r.match,'320px');m.maxLength=80;m.placeholder='Фрагмент названия лота';
-    m.addEventListener('input',function(){r.match=m.value;});
-    var x=el('button','b','Удалить правило');x.type='button';x.addEventListener('click',function(){RV.rules.splice(i,1);rvRules();});
-    var bar=el('div','bar');bar.appendChild(m);bar.appendChild(x);w.appendChild(bar);
+    var w=el('div','box');
+    var hd=el('div','bar');hd.appendChild(el('b','','Правило '+(i+1)));
+    var x=el('button','b','Удалить правило');x.type='button';
+    x.addEventListener('click',function(){if(!confirm('Удалить правило '+(i+1)+'? Список промокодов у него останется в файле, но выдавать из него будет нельзя.'))return;RV.rules.splice(i,1);rvRules();rvAuto();});
+    hd.appendChild(x);w.appendChild(hd);
+    /* лоты правила */
+    w.appendChild(el('div','fh','Лоты этого правила ('+r.matches.length+')'));
+    var chips=el('div','bar');chips.style.gap='6px';
+    if(!r.matches.length)chips.appendChild(el('span','warn','Выберите хотя бы один лот ниже, иначе правило не сохранится.'));
+    r.matches.forEach(function(m,mi){
+      var c=el('span','tag',m+' ✕');c.style.cssText='cursor:pointer;border:1px solid var(--line);border-radius:10px;padding:2px 8px;margin:0';c.title='Убрать лот из правила';
+      c.addEventListener('click',function(){r.matches.splice(mi,1);rvRules();rvAuto();});chips.appendChild(c);});
+    w.appendChild(chips);
+    var det=el('details');var sm=el('summary','','Выбрать лоты из моих (на аккаунте)');det.appendChild(sm);
+    var q=el('input');q.type='text';q.placeholder='Поиск по названию';q.style.cssText='max-width:300px;margin:6px 0';det.appendChild(q);
+    var list=el('div','slist');list.style.maxHeight='220px';det.appendChild(list);
+    function fill(){
+      list.textContent='';var ql=q.value.trim().toLowerCase(),n=0,titles=rvMyTitles();
+      if(!titles.length)list.appendChild(el('div','note',RV.myErr?('Лоты аккаунта не загружены: '+RV.myErr):'Ваши лоты ещё не загружены: подождите или войдите на вкладке «Аккаунт».'));
+      titles.forEach(function(t){
+        if(ql&&t.toLowerCase().indexOf(ql)<0)return;
+        var f=rvFrag(t),own=rvOwner(f,r),lb=el('label'),c=el('input');c.type='checkbox';
+        c.checked=r.matches.some(function(m){return m.toLowerCase()===f.toLowerCase();});c.disabled=!!own&&!c.checked;
+        c.addEventListener('change',function(){
+          if(c.checked){if(!r.matches.some(function(m){return m.toLowerCase()===f.toLowerCase();}))r.matches.push(f);}
+          else r.matches=r.matches.filter(function(m){return m.toLowerCase()!==f.toLowerCase();});
+          rvRules();rvAuto();});
+        lb.appendChild(c);lb.appendChild(el('span','',' '+t.slice(0,90)+(own?' (уже в правиле '+own+')':'')));list.appendChild(lb);n++;});
+      if(titles.length&&!n)list.appendChild(el('div','note','Ничего не найдено.'));
+    }
+    q.addEventListener('input',fill);fill();
+    if(r.open||!r.matches.length){det.open=true;}
+    det.addEventListener('toggle',function(){r.open=det.open;});
+    w.appendChild(det);
+    /* текст */
     w.appendChild(el('div','fh','Текст просьбы (подстановки: {order} {lot} {price} {link} {promise})'));
-    var t=el('textarea','full');t.rows=3;t.maxLength=1000;t.value=r.text;t.addEventListener('input',function(){r.text=t.value;});w.appendChild(t);
+    var t=el('textarea','full');t.rows=3;t.maxLength=1000;t.value=r.text;t.addEventListener('input',function(){r.text=t.value;rvAuto();});w.appendChild(t);
+    /* награда */
     var R=r.reward,rb=el('div','bar'),lb=el('label'),cb=rvIn('checkbox','');cb.checked=R.enabled;
     lb.appendChild(cb);lb.appendChild(el('span','',' Награда за отзыв с оценкой '));
     var st=rvIn('number',R.stars,'60px');st.min=1;st.max=5;
     var ty=el('select');[['stock','Штучный (список промокодов)'],['endless','Бесконечный (ссылка или текст)']].forEach(function(p){var o=el('option','',p[1]);o.value=p[0];if(R.type===p[0])o.selected=true;ty.appendChild(o);});
-    var un=rvIn('number',R.units,'80px');un.min=1;un.max=1000;var unl=el('label','','');unl.appendChild(el('span','',' Штук за отзыв: '));unl.appendChild(un);
-    rb.appendChild(lb);rb.appendChild(st);rb.appendChild(el('span','cnt',' из 5. Тип: '));rb.appendChild(ty);rb.appendChild(unl);w.appendChild(rb);
+    var un=rvIn('number',R.units,'80px');un.min=1;un.max=1000;var unl=el('label');unl.appendChild(el('span','',' Штук за отзыв: '));unl.appendChild(un);
+    var uc=rvIn('number',R.unit_cost||0,'90px');uc.min=0;uc.step='0.01';var ucl=el('label');ucl.appendChild(el('span','',' Стоимость 1 шт., ₽: '));ucl.appendChild(uc);ucl.title='Сколько вам обходится одна штука. Нужна только для подсчёта расходов на награды.';
+    rb.appendChild(lb);rb.appendChild(st);rb.appendChild(el('span','cnt',' из 5. Тип: '));rb.appendChild(ty);rb.appendChild(unl);rb.appendChild(ucl);w.appendChild(rb);
     var en=el('div');en.appendChild(el('div','fh','Бесконечная награда: текст или ссылка (одинаковые для всех)'));
-    var et=el('textarea','full');et.rows=2;et.maxLength=1000;et.value=R.endless_text;et.addEventListener('input',function(){R.endless_text=et.value;});en.appendChild(et);w.appendChild(en);
-    var sk=el('div');sk.appendChild(el('div','fh','Штучная награда: список (одна строка = одна штука, как автовыдача на FunPay). Осталось в списке: '+(RV.cfg.stock[r.match]===undefined?'сначала сохраните правило':RV.cfg.stock[r.match])));
+    var et=el('textarea','full');et.rows=2;et.maxLength=1000;et.value=R.endless_text;et.addEventListener('input',function(){R.endless_text=et.value;rvAuto();});en.appendChild(et);w.appendChild(en);
+    var left=r.key&&RV.cfg.stock[r.key]!==undefined?RV.cfg.stock[r.key]:null;
+    var sk=el('div');sk.appendChild(el('div','fh','Список промокодов на все лоты правила (одна строка = одна штука). Осталось: '+(left===null?'правило ещё не сохранено':left)));
     var sa=el('textarea','full');sa.rows=4;sa.placeholder='PROMO-1\nPROMO-2';sk.appendChild(sa);
     var sb=el('div','bar');
     [['Заменить список',false],['Добавить к списку',true]].forEach(function(p){var b=el('button','b',p[0]);b.type='button';b.addEventListener('click',function(){
+      if(!r.matches.length){say('Сначала выберите лоты правила.',true);return;}
       if(!sa.value.trim()&&!p[1]&&!confirm('Список пустой: текущий список наград этого правила будет очищен. Продолжить?'))return;
-      ap('/api/review/stock',{match:r.match,text:sa.value,append:p[1]}).then(function(d){say('Список правила: теперь '+d.count+' шт.');return rvLoad();}).catch(function(e){say(e.message,true);});});sb.appendChild(b);});
+      rvSave(true).then(function(ok){if(!ok)throw new Error('Правило не сохранено, смотрите сообщение справа от задержки.');
+        return rvKeys();}).then(function(){var rr=RV.rules[i];
+        return ap('/api/review/stock',{key:rr.key||rr.matches[0],text:sa.value,append:p[1]});})
+        .then(function(d){say('Список правила: теперь '+d.count+' шт.');return rvLoad();}).catch(function(e){say(e.message,true);});});sb.appendChild(b);});
     sk.appendChild(sb);w.appendChild(sk);
     w.appendChild(el('div','fh','Сообщение с наградой (подстановки: {order} {stars} {reward}; {reward} обязателен)'));
-    var th=el('textarea','full');th.rows=2;th.maxLength=1000;th.value=R.thanks;th.addEventListener('input',function(){R.thanks=th.value;});w.appendChild(th);
-    function dis(){var off=false;cb.disabled=off;[st,ty,un,et,th].forEach(function(e){e.disabled=off||!cb.checked;});
-      en.style.display=R.type==='endless'?'block':'none';sk.style.display=R.type==='stock'?'block':'none';unl.style.display=R.type==='stock'?'inline':'none';}
-    cb.addEventListener('change',function(){R.enabled=cb.checked;dis();});
-    st.addEventListener('input',function(){R.stars=Number(st.value);});un.addEventListener('input',function(){R.units=Number(un.value);});
-    ty.addEventListener('change',function(){R.type=ty.value;dis();});
+    var th=el('textarea','full');th.rows=2;th.maxLength=1000;th.value=R.thanks;th.addEventListener('input',function(){R.thanks=th.value;rvAuto();});w.appendChild(th);
+    function dis(){[st,ty,un,uc,et,th].forEach(function(e){e.disabled=!cb.checked;});
+      en.style.display=R.type==='endless'?'block':'none';sk.style.display=R.type==='stock'?'block':'none';unl.style.display=R.type==='stock'?'inline':'none';ucl.style.display=R.type==='stock'?'inline':'none';}
+    cb.addEventListener('change',function(){R.enabled=cb.checked;dis();rvAuto();});
+    st.addEventListener('input',function(){R.stars=Number(st.value);rvAuto();});un.addEventListener('input',function(){R.units=Number(un.value);rvAuto();});uc.addEventListener('input',function(){R.unit_cost=uc.value;rvAuto();});
+    ty.addEventListener('change',function(){R.type=ty.value;dis();rvAuto();});
     dis();box.appendChild(w);});
 }
-var RVB={sel:{}};
-function rvBulkInit(){
-  if(!$('rv-bt').value)$('rv-bt').value=$('rv-def').value;
-  if(!$('rv-bh').value)$('rv-bh').value='Спасибо за отзыв на {stars} из 5! Ваша награда по заказу {order}:\n{reward}';
-  rvBulkList();
-}
-function rvBulkList(){
-  var box=$('rv-bl');box.textContent='';var q=$('rv-bq').value.trim().toLowerCase(),shown=0;
-  var have={};RV.rules.forEach(function(r){have[r.match.toLowerCase()]=1;});
-  rvMyTitles().forEach(function(t){
-    if(q&&t.toLowerCase().indexOf(q)<0)return;
-    var lb=el('label'),c=el('input');c.type='checkbox';c.checked=!!RVB.sel[t];
-    c.addEventListener('change',function(){if(c.checked)RVB.sel[t]=1;else delete RVB.sel[t];});
-    lb.appendChild(c);lb.appendChild(el('span','',' '+t.slice(0,90)+(have[t.slice(0,40).toLowerCase()]?' (правило уже есть)':'')));box.appendChild(lb);shown++;});
-  if(!shown)box.appendChild(el('div','note',AC.rows.length?'Ничего не найдено.':'Список ваших лотов не загружен: войдите на вкладке «Аккаунт» и откройте этот блок снова.'));
-}
-function rvBulkAdd(){
-  var keys=Object.keys(RVB.sel);
-  if(!keys.length){say('Отметьте хотя бы один лот.',true);return;}
-  var have={};RV.rules.forEach(function(r){have[r.match.toLowerCase()]=1;});
-  var added=0,skipped=0;
-  keys.forEach(function(t){
-    var m=t.slice(0,40).trim();
-    if(!m||have[m.toLowerCase()]){skipped++;return;}
-    have[m.toLowerCase()]=1;
-    RV.rules.push({match:m,text:$('rv-bt').value,reward:{enabled:$('rv-be').checked,stars:Number($('rv-bs').value)||5,units:Number($('rv-bu').value)||1,
-      type:$('rv-by').value,endless_text:$('rv-bx').value,thanks:$('rv-bh').value}});added++;});
-  RVB.sel={};rvRules();rvBulkList();
-  $('rv-bn').textContent='Добавлено правил: '+added+(skipped?', пропущено (уже есть или совпали первые 40 символов): '+skipped:'')+'. Нажмите «Сохранить шаблоны».';
-}
-function rvSave(){
-  return ap('/api/review/settings',{default:$('rv-def').value,delay_hours:$('rv-delay').value,lots:RV.rules})
-   .then(function(){say('Шаблоны сохранены.');return rvLoad();}).catch(function(e){say(e.message,true);});
+/* после сохранения у новых правил появляется key: подтягиваем его с сервера, не теряя несохранённые черновики */
+function rvKeys(){
+  return api('/api/review/list').then(function(d){
+    RV.cfg=d.settings;
+    RV.rules.forEach(function(r){
+      var s=d.settings.lots.find(function(x){return x.matches.length&&x.matches.some(function(m){return r.matches.indexOf(m)>=0;});});
+      if(s)r.key=s.key;});});
 }
 function rvSend(o){
   return ap('/api/review/send',{id:o.id}).then(function(r){
     if(!r.sent)throw new Error('Сайт вернул ошибку: '+r.error_site+'. Просьба не отмечена отправленной.');
     return rvLoad().then(function(){return r;});});
 }
+function rvScan(){
+  if(!confirm('Найти подтверждённые заказы по коду страниц заказов? Это 1 запрос списка заказов и до 40 запросов страниц заказов, по одному с паузой. Ничего не отправляется покупателям. Если заказ у нас помечен подтверждённым, а на странице он не «Закрыт», пометка будет снята.'))return;
+  $('rv-scan').disabled=true;say('Ищу подтверждённые заказы по страницам… это может занять около минуты.');
+  ap('/api/review/scan').then(function(r){
+    say('Проверено страниц: '+r.checked+'. Новых подтверждённых: '+r.confirmed+', уточнено: '+r.corrected+', снято подтверждение (на странице не «Закрыт»): '+r.reverted+
+      ', возвратов: '+r.refunded+', не разобрано: '+r.unclear+', оценок прочитано: '+r.stars+'.'+(r.left?' Осталось проверить: '+r.left+', нажмите ещё раз.':''),r.unclear>0);
+    return rvLoad();
+  }).catch(function(e){say(e.message,true);rvLoad();}).then(function(){$('rv-scan').disabled=false;});
+}
 function rvReadStars(o){return ap('/api/review/read-stars',{id:o.id});}
 function rvReadAll(){
-  var todo=RV.orders.filter(function(o){return o.review_at&&!(o.reward&&o.reward.at);}),i=0,got=0;
-  if(!todo.length){say('Нет заказов с отправленной просьбой, ожидающих оценки.');return;}
+  var todo=RV.orders.filter(function(o){return o.reward&&!o.reward.at&&!o.reward.can;}),i=0,got=0;
+  if(!todo.length){say('Нет заказов, где награда возможна и оценка ещё не совпала с нужной.');return;}
   if(!confirm('Прочитать оценки по '+todo.length+' заказам? Это '+todo.length+' запросов страниц заказов, по одному с паузой. Ничего не отправляется покупателям.'))return;
   $('rv-readall').disabled=true;
   (function next(){
@@ -878,15 +999,19 @@ function rvReadAll(){
 }
 function rvRender(){
   var box=$('rv-tbl');box.textContent='';
-  if(!RV.orders.length){box.appendChild(el('div','empty','Подтверждённых заказов нет. Заказы появляются здесь после статуса «подтверждён» на вкладке «Подтверждения».'));return;}
+  if(!RV.orders.length){box.appendChild(el('div','empty','Подтверждённых заказов нет. Нажмите «Найти подтверждённые заказы»: программа откроет страницы заказов и найдёт закрытые.'));return;}
   var t=el('table'),th=el('thead'),hr=el('tr');
   ['Заказ','Лот','Подтверждён','Шаблон','Просьба','Оценка отзыва','Награда','Текст просьбы','Действия'].forEach(function(h){hr.appendChild(el('th','',h));});
   th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
   RV.orders.forEach(function(o){
     var tr=el('tr'),c=el('td','id');c.appendChild(ordLink(o.id));tr.appendChild(c);
     tr.appendChild(el('td','',o.lot||'—'));
-    tr.appendChild(el('td','cnt',o.confirmed_at?o.confirmed_at.replace('T',' ').slice(0,16):'—'));
-    tr.appendChild(el('td','cnt',o.key||'—'));
+    var ct=el('td','cnt',o.confirmed_at?o.confirmed_at.replace('T',' ').slice(0,16):'—');
+    if(o.confirmed_by)ct.appendChild(el('div','',o.confirmed_by));
+    tr.appendChild(ct);
+    var kt=el('td','cnt',o.key||'—');
+    if(!o.review_at&&!o.reward_in_text)kt.appendChild(el('div','warn','без награды в тексте'));
+    tr.appendChild(kt);
     var st=o.review_at?'отправлена '+o.review_at.replace('T',' ').slice(0,16):(o.can?'можно отправить':o.blockers.join('; '));
     tr.appendChild(el('td',o.can||o.review_at?'cnt':'warn cnt',st));
     var sc=el('td'),sel=el('select');[['','—'],['1','1★'],['2','2★'],['3','3★'],['4','4★'],['5','5★']].forEach(function(p){var op=el('option','',p[1]);op.value=p[0];if(String(o.stars||'')===p[0])op.selected=true;sel.appendChild(op);});
@@ -899,9 +1024,9 @@ function rvRender(){
     tr.appendChild(sc);
     var rw=o.reward,rt=el('td','cnt');
     if(!rw)rt.textContent='—';
-    else if(rw.at)rt.textContent='выдана '+rw.at.replace('T',' ').slice(0,16);
-    else if(rw.can)rt.textContent='можно выдать ('+(rw.type==='stock'?rw.units+' шт.':'бонус')+')';
-    else{rt.textContent=rw.blockers.join('; ');rt.className='warn cnt';}
+    else if(rw.at)rt.textContent='выдана '+rw.at.replace('T',' ').slice(0,16)+(rw.spent?', '+Number(rw.spent).toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽'+(rw.spent_est?' (по текущей цене)':''):'');
+    else if(rw.can)rt.textContent='можно выдать ('+(rw.type==='stock'?rw.units+' шт.':'бонус')+')'+(rw.cost?', ≈'+Number(rw.cost).toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽':'')+(rw.unrequested?', отзыв без просьбы':'');
+    else{rt.textContent=(rw.unrequested?'без просьбы: ':'')+rw.blockers.join('; ');rt.className=(rw.unrequested?'':'warn ')+'cnt';}
     tr.appendChild(rt);
     var tx=el('td','cnt',o.text||'—');tx.style.whiteSpace='pre-wrap';tx.style.maxWidth='320px';tr.appendChild(tx);
     var ac=el('td','btns');
@@ -912,7 +1037,7 @@ function rvRender(){
       if(!confirm('Покупатель оставил отзыв на '+o.stars+' из 5 (заказ #'+o.id+'). Отправить ему награду ('+(rw.type==='stock'?rw.units+' шт. из списка':'бонус')+')?'))return;
       g.disabled=true;ap('/api/review/reward-send',{id:o.id}).then(function(r){
         if(!r.sent)throw new Error('Сайт вернул ошибку: '+r.error_site+'. Награда не отмечена выданной, список не тронут.');say(r.note);return rvLoad();}).catch(function(e){say(e.message,true);rvLoad();});});ac.appendChild(g);}
-    if(o.review_at&&!(rw&&rw.at))ac.appendChild(cfBtn('Прочитать оценку',function(){
+    if((o.review_at||rw)&&!(rw&&rw.at))ac.appendChild(cfBtn('Прочитать оценку',function(){
       rvReadStars(o).then(function(r){say(r.stars?('Оценка по заказу #'+o.id+': '+r.stars+' из 5.'):(r.note||'Оценка не найдена.'),!r.stars&&r.found);return rvLoad();}).catch(function(e){say(e.message,true);});}));
     if(!o.review_at)ac.appendChild(cfBtn(o.skip?'Снять «не просить»':'Не просить',function(){
       ap('/api/review/skip',{id:o.id,off:o.skip}).then(function(){say('');return rvLoad();}).catch(function(e){say(e.message,true);});}));
@@ -927,14 +1052,12 @@ function rvLog(rows){
   box.appendChild(t);
 }
 $('rv-reload').addEventListener('click',rvLoad);
-$('rv-badd').addEventListener('click',rvBulkAdd);
-$('rv-bulkbox').addEventListener('toggle',function(){if($('rv-bulkbox').open)rvEnsureMyLots();});
-$('rv-bq').addEventListener('input',rvBulkList);
-$('rv-by').addEventListener('change',function(){$('rv-bx').style.display=$('rv-by').value==='endless'?'block':'none';});
 $('rv-readall').addEventListener('click',rvReadAll);
-$('rv-save').addEventListener('click',rvSave);
-$('rv-addrule').addEventListener('click',function(){RV.rules.push(rvNewRule(''));rvRules();});
-$('rv-pick').addEventListener('change',function(){var v=$('rv-pick').value;if(!v)return;RV.rules.push(rvNewRule(v.slice(0,40)));$('rv-pick').value='';rvRules();});
+$('rv-scan').addEventListener('click',rvScan);
+$('rv-save').addEventListener('click',function(){rvSave(false);});
+$('rv-def').addEventListener('input',rvAuto);
+$('rv-delay').addEventListener('input',rvAuto);
+$('rv-addrule').addEventListener('click',function(){RV.rules.push(rvNewRule());rvRules();});
 $('rv-ins').addEventListener('click',function(){
   var id=$('rv-insid').value.trim();if(!id){say('Введите номер заказа.',true);return;}
   if(!confirm('Открыть одну страницу заказа #'+id.replace('#','')+' и сохранить только блок отзыва (без чата)?'))return;
@@ -945,7 +1068,8 @@ $('rv-ins').addEventListener('click',function(){
 $('rv-all').addEventListener('click',function(){
   var todo=RV.orders.filter(function(o){return o.can;}).slice(0,30);
   if(!todo.length){say('Нет заказов, готовых к отправке.');return;}
-  if(!confirm('Отправить просьбу об отзыве по '+todo.length+' заказам (не больше 30 за раз), по одному сообщению с паузами? Тексты видны в таблице.'))return;
+  var nop=todo.filter(function(o){return !o.reward_in_text;}).length;
+  if(!confirm('Отправить просьбу об отзыве по '+todo.length+' заказам (не больше 30 за раз), по одному сообщению с паузами? Тексты видны в таблице.'+(nop?'\n\nВНИМАНИЕ: в '+nop+' из них про награду ничего не написано (у лота нет правила с наградой, идёт общий шаблон). Отправить всё равно?':'')))return;
   $('rv-all').disabled=true;var i=0,sent=0,skipped=0;
   (function next(){
     if(i>=todo.length){$('rv-all').disabled=false;say('Готово: отправлено '+sent+', отказов проверки '+skipped+'. Проверьте сообщения в диалогах.');rvLoad();return;}
@@ -953,6 +1077,169 @@ $('rv-all').addEventListener('click',function(){
       if(/^просьба не отправлена/.test(e.message)){skipped++;next();return;}
       $('rv-all').disabled=false;say('Остановился: '+e.message+' (отправлено '+sent+').',true);rvLoad();});
   })();
+});
+
+$('rv-rwall').addEventListener('click',function(){
+  var todo=RV.orders.filter(function(o){return o.reward&&o.reward.can;}).slice(0,30);
+  if(!todo.length){say('Нет заказов, готовых к выдаче награды.');return;}
+  if(!confirm('Выдать награду по '+todo.length+' заказам (не больше 30 за раз)? Каждому покупателю уйдёт одно сообщение с наградой, по одному с паузами. У всех оценка совпала с нужной.\n\nЗаказы: '+todo.map(function(o){return '#'+o.id;}).join(', ')))return;
+  $('rv-rwall').disabled=true;var i=0,sent=0,skipped=0;
+  function fail(m){$('rv-rwall').disabled=false;say('Остановился: '+m+' (выдано '+sent+' из '+todo.length+').',true);rvLoad();}
+  (function next(){
+    if(i>=todo.length){$('rv-rwall').disabled=false;say('Готово: награда выдана по '+sent+' заказам, отказов проверки '+skipped+' (причины в журнале). Проверьте сообщения в диалогах.',skipped>0);rvLoad();return;}
+    var o=todo[i++];say('Выдаю награды: '+i+' из '+todo.length+'…');
+    ap('/api/review/reward-send',{id:o.id}).then(function(r){
+      if(!r.sent){fail('сайт вернул ошибку по заказу #'+o.id+': '+r.error_site+'. Награда по нему не отмечена выданной');return;}
+      sent++;next();}).catch(function(e){if(/^награда не выдана/.test(e.message)){skipped++;next();return;}fail(e.message);});
+  })();
+});
+
+/* ---------- Статистика v1 ---------- */
+function pct(v){return(v===null||v===undefined)?'—':(Math.round(v*1000)/10)+' %';}
+function sv1Pend(){return ap('/api/stat/v1/rewards').then(function(d){
+  var box=$('sv-pend');box.textContent='';$('rw-u').value=$('rw-u').value||d.settings.reward_units;
+  if(!d.pending.length)box.appendChild(el('div','cnt','Нет заказов с 5★ без записанной награды (нужны детали заказов и дата акции у лота).'));
+  else{var t=el('table'),th=el('thead'),hr=el('tr');['','Заказ','Лот','Название','Дата'].forEach(function(h){hr.appendChild(el('th','',h));});th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
+    d.pending.forEach(function(p){var tr=el('tr'),td=el('td','btns'),b=el('button','b','Выдано');b.type='button';
+      b.addEventListener('click',function(){if(!confirm('Записать награду за заказ #'+p.order+' ('+d.settings.reward_units+' ед.) как выданную?'))return;b.disabled=true;
+        ap('/api/stat/v1/reward_add',{order:p.order,stars:5,units:d.settings.reward_units}).then(function(){say('');sv1All();}).catch(function(e){say(e.message,true);b.disabled=false;});});
+      td.appendChild(b);tr.appendChild(td);tr.appendChild(el('td','id','#'+p.order));tr.appendChild(el('td','id',p.lot));tr.appendChild(el('td','',p.title));tr.appendChild(el('td','',p.date));tb.appendChild(tr);});
+    t.appendChild(tb);box.appendChild(t);}
+  var rw=$('sv-rw');rw.textContent='';rw.appendChild(el('div','cnt','Журнал (последние 100), всего потрачено на награды: '+money(d.total)+' ₽ (факт)'));
+  if(d.items.length)rw.appendChild(tbl(['Дата','Заказ','Лот','Звёзды','Единиц','Стоимость, ₽','Источник'],d.items.map(function(r){return[r.date,'#'+r.order,r.lot||'—',String(r.stars||'—'),String(r.units),money(r.cost),r.src||''];}),[3,4,5]));
+}).catch(function(e){say(e.message,true);});}
+function sv1Exp(){return ap('/api/stat/v1/expenses').then(function(d){
+  var c=$('ex-c');if(!c.options.length)d.cats.forEach(function(x){var o=el('option','',x);o.value=x;c.appendChild(o);});
+  if(!$('ex-d').value)$('ex-d').value=d.today;
+  var box=$('sv-ex');box.textContent='';if(d.items.length)box.appendChild(tbl(['Дата','Категория','Сумма, ₽','Комментарий'],d.items.map(function(e){return[e.date,e.category,money(e.amount),e.comment||''];}),[2]));
+}).catch(function(e){say(e.message,true);});}
+function sv1Set(){return ap('/api/stat/v1/settings_get').then(function(d){
+  var box=$('sv-set');box.textContent='';
+  d.order.forEach(function(k){var lb=el('label'),i=el('input');i.type='text';i.style.width='80px';i.value=d.settings[k];i.setAttribute('data-k',k);lb.appendChild(el('span','',d.labels[k]+': '));lb.appendChild(i);lb.style.display='block';box.appendChild(lb);});
+}).catch(function(e){say(e.message,true);});}
+function sv1Report(){
+  return ap('/api/stat/v1/report',{days:Number($('sv-days').value)}).then(function(d){
+    say('');var w=$('sv-warn');w.textContent='';d.warnings.forEach(function(x){w.appendChild(el('div','msg bad',x));w.lastChild.style.display='block';});
+    var t=d.tot,box=$('sv-tot');box.textContent='';
+    box.appendChild(tbl(['Итог по магазину','₽','Тип'],[
+      ['Выручка (только «Закрыт»), заказов '+t.closed,money(t.rev),'факт'],['Возвраты отдельно, '+t.refund_n+' шт.',money(t.refund_sum),'факт'],
+      ['Комиссия FunPay ('+d.fee+' %)',money(t.comm),'оценка'],['Себестоимость',money(t.cost),'оценка'],
+      ['РАСХОДЫ НА НАГРАДЫ ЗА ОТЗЫВЫ',money(t.rw),'факт'],['Прочие расходы',money(t.other),'факт'],
+      ['ЧИСТАЯ ПРИБЫЛЬ после всех расходов',money(t.net),'оценка']],[1]));
+    var tp=$('sv-tips');tp.textContent='';
+    if(!d.tips.length)tp.appendChild(el('div','cnt','Подсказок нет: условия порогов не выполнены или данных мало.'));
+    d.tips.forEach(function(x){var b=el('div','box');b.appendChild(el('b','',x.action.toUpperCase()+' · '+x.title+' [ID '+x.lot+'] '));b.appendChild(el('span','lab o','оценка'));b.appendChild(el('div','cnt',x.basis));tp.appendChild(b);});
+    var lb=$('sv-lotstbl');lb.textContent='';
+    if(!d.lots.length){lb.appendChild(el('div','empty','За период заказов нет.'));return;}
+    var tb=el('table'),th=el('thead'),hr=el('tr');
+    ['Лот','Закр. (ф)','Выручка (ф)','Возвр. шт (ф)','Доля возвр. (о)','Комиссия (о)','Себест. за ед. (ввод)','Себест. (о)','Награды (ф)','Прибыль (о)','На заказ (о)','Отзывов (ф)','Конв. в отзыв (о)','Доля 5★ (о)','Стоимость отзыва (о)','Акция с','Акция: вердикт (о)'].forEach(function(h,i){hr.appendChild(el('th',i>0&&i<15?'num':'',h));});
+    th.appendChild(hr);tb.appendChild(th);var bd=el('tbody');
+    d.lots.forEach(function(x){var tr=el('tr');tr.appendChild(el('td','',x.title+(x.id?' [ID '+x.id+']':'')));
+      [x.closed,money(x.rev),x.refund,pct(x.refund_share),money(x.comm)].forEach(function(v){tr.appendChild(el('td','num',String(v)));});
+      var cs=el('td','num');if(x.id){var i=el('input');i.type='text';i.style.width='70px';i.value=(x.unit_cost===null||x.unit_cost===undefined)?'':x.unit_cost;
+        i.addEventListener('change',function(){ap('/api/stat/v1/cost',{lot:x.id,cost:i.value}).then(function(){say('');sv1Report();}).catch(function(e){say(e.message,true);});});cs.appendChild(i);}
+      tr.appendChild(cs);
+      [money(x.cost),money(x.rw_cost),money(x.profit),money(x.profit_order),x.reviews,pct(x.conv),pct(x.five_share),money(x.cost_review)].forEach(function(v){tr.appendChild(el('td','num',String(v)));});
+      var ps=el('td','');if(x.id){var di=el('input');di.type='text';di.placeholder='ГГГГ-ММ-ДД';di.style.width='100px';di.value=(x.promo&&x.promo.since)||'';
+        di.addEventListener('change',function(){ap('/api/stat/v1/promo',{lot:x.id,since:di.value.trim()}).then(function(){say('');sv1Report();sv1Pend();}).catch(function(e){say(e.message,true);});});ps.appendChild(di);}
+      tr.appendChild(ps);var pv=x.promo||{},vt='';
+      if(pv.verdict){vt=pv.verdict+(pv.R!==undefined?': Р='+money(pv.R)+' ₽ (Д='+pv.D+' ед. × П='+money(pv.P)+' − З='+money(pv.Z)+'); безубыточность '+pv.T+' ед. на отзыв':'')+(pv.why?' ('+pv.why+')':'')+'; ед. до/после '+pv.E_before+'/'+pv.E_after;}
+      tr.appendChild(el('td','',vt));bd.appendChild(tr);});
+    tb.appendChild(bd);lb.appendChild(tb);
+  }).catch(function(e){say(e.message,true);});
+}
+function sv1All(){sv1Report();sv1Pend();sv1Exp();sv1Set();}
+$('sv-rep').addEventListener('click',sv1Report);$('sv-days').addEventListener('change',sv1Report);
+$('sv-det').addEventListener('click',function(){var n=Number($('sv-lim').value)||20;
+  if(!confirm('Открыть страницы заказов (до '+n+' запросов, с паузами)? Читаются только ID лота и звёзды отзыва.'))return;
+  $('sv-det').disabled=true;say('Загружаю детали заказов…');
+  ap('/api/stat/v1/details',{limit:n}).then(function(d){$('sv-det').disabled=false;var m='Обработано заказов: '+d.done+', с ID лота: '+d.linked+', со звёздами: '+d.with_stars+', осталось: '+d.left+(d.left?'. Нажмите ещё раз.':'.')+(d.diag?' '+d.diag:'');sv1Pend();sv1Exp();sv1Set();sv1Report().then(function(){say(m);});})
+   .catch(function(e){$('sv-det').disabled=false;say(e.message,true);});});
+function svLots(){
+  ap('/api/stat/v1/lots').then(function(d){
+    var box=$('sv-lotbox');box.textContent='';box.style.display='block';
+    box.appendChild(el('div','cnt','Все лоты из ваших заказов. Если лот переименовали, программа видит его как новый: у нового лота выберите старый и нажмите «Объединить», заказы сложатся вместе. Объединение можно отменить кнопкой «Разъединить». Себестоимость у объединённых берётся от оставляемого лота.'));
+    var roots=d.lots.filter(function(l){return !l.into;});
+    var t=el('table'),hr=el('tr');['Название','ID','Заказов','Последний','Тип','Объединить с'].forEach(function(c){hr.appendChild(el('th','',c));});
+    var th=el('thead');th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
+    d.lots.forEach(function(l){
+      var tr=el('tr');tr.appendChild(el('td','',l.title));tr.appendChild(el('td','',l.id));tr.appendChild(el('td','num',String(l.orders)));tr.appendChild(el('td','',l.last));
+      tr.appendChild(el('td','',l.syn?'условный номер (нет в профиле)':'настоящий'));
+      var td=el('td','');
+      if(l.into){var to=d.lots.filter(function(x){return x.id===l.into;})[0];td.appendChild(el('span','','объединён с: '+(to?to.title.slice(0,50):l.into)+' '));
+        var b=el('button','b','Разъединить');b.type='button';b.addEventListener('click',function(){ap('/api/stat/v1/lot_unmerge',{from:l.id}).then(function(){svLots();sv1Report();}).catch(function(e){say(e.message,true);});});td.appendChild(b);}
+      else{var sel=el('select');sel.appendChild(el('option','','— выберите лот —'));sel.firstChild.value='';
+        roots.forEach(function(x){if(x.id===l.id)return;var o=el('option','',x.title.slice(0,60)+' ('+x.orders+')');o.value=x.id;sel.appendChild(o);});
+        var b2=el('button','b','Объединить');b2.type='button';b2.addEventListener('click',function(){
+          if(!sel.value){say('Сначала выберите, с каким лотом объединить.',true);return;}
+          var tt=roots.filter(function(x){return x.id===sel.value;})[0];
+          if(!confirm('Считать «'+l.title.slice(0,60)+'» тем же лотом, что «'+(tt?tt.title.slice(0,60):sel.value)+'»? Заказы сложатся вместе в отчёте.'))return;
+          ap('/api/stat/v1/lot_merge',{from:l.id,to:sel.value}).then(function(){say('');svLots();sv1Report();}).catch(function(e){say(e.message,true);});});
+        td.appendChild(sel);td.appendChild(b2);}
+      tr.appendChild(td);tb.appendChild(tr);});
+    t.appendChild(tb);var wrap=el('div');wrap.style.overflowX='auto';wrap.appendChild(t);box.appendChild(wrap);
+    if(!d.lots.length)box.appendChild(el('div','empty','Лотов с ID пока нет: нажмите «Загрузить детали заказов».'));
+  }).catch(function(e){say(e.message,true);});}
+$('sv-lots').addEventListener('click',function(){show('merge');});
+$('sv-exp').addEventListener('click',function(){ap('/api/stat/v1/export',{days:Number($('sv-days').value)}).then(function(d){var o=$('sv-exp-out');o.textContent='Сохранено: '+d.csv+'\nи '+d.txt+'\n\n'+d.text;o.style.display='block';say('');}).catch(function(e){say(e.message,true);});});
+$('rw-add').addEventListener('click',function(){ap('/api/stat/v1/reward_add',{order:$('rw-o').value,stars:Number($('rw-s').value),units:Number($('rw-u').value)}).then(function(){say('');$('rw-o').value='';sv1All();}).catch(function(e){say(e.message,true);});});
+$('ex-add').addEventListener('click',function(){ap('/api/stat/v1/expense_add',{date:$('ex-d').value,category:$('ex-c').value,amount:$('ex-a').value,comment:$('ex-m').value}).then(function(){say('');$('ex-a').value='';$('ex-m').value='';sv1All();}).catch(function(e){say(e.message,true);});});
+$('sv-setsave').addEventListener('click',function(){var v={};Array.prototype.forEach.call($('sv-set').querySelectorAll('input'),function(i){v[i.getAttribute('data-k')]=i.value;});
+  ap('/api/stat/v1/settings_set',{values:v}).then(function(){say('Настройки сохранены.');sv1All();}).catch(function(e){say(e.message,true);});});
+
+/* ---------- Слияние лотов ---------- */
+var MG={lots:[],sel:{}};
+function mgLabel(l){return l.title+' · ID '+l.id+' · заказов '+l.orders+(l.last?' · последний '+l.last:'')+(l.in_profile?' · есть в профиле':(l.syn?' · нет в профиле':''));}
+function mgCount(){var n=Object.keys(MG.sel).length;$('mg-cnt').textContent=n?('Отмечено старых лотов: '+n):'Ничего не отмечено';}
+function mgFill(){
+  var q=$('mg-q').value.trim().toLowerCase(),box=$('mg-from');box.textContent='';
+  var live={};MG.lots.forEach(function(l){if(!l.into)live[l.id]=1;});Object.keys(MG.sel).forEach(function(k){if(!live[k])delete MG.sel[k];});
+  MG.lots.forEach(function(l){
+    if(l.into)return;
+    var t=mgLabel(l);if(q&&t.toLowerCase().indexOf(q)<0&&!MG.sel[l.id])return;
+    var lb=el('label'),c=el('input');c.type='checkbox';c.checked=!!MG.sel[l.id];
+    c.addEventListener('change',function(){if(c.checked)MG.sel[l.id]=true;else delete MG.sel[l.id];mgCount();});
+    lb.appendChild(c);lb.appendChild(el('span','',' '+t));box.appendChild(lb);});
+  var s=$('mg-to'),keep=s.value;s.textContent='';var o0=el('option','','— выберите лот —');o0.value='';s.appendChild(o0);
+  MG.lots.forEach(function(l){
+    if(l.into)return;
+    var t=mgLabel(l);if(q&&t.toLowerCase().indexOf(q)<0&&l.id!==keep)return;
+    var o=el('option','',t);o.value=l.id;if(l.id===keep)o.selected=true;s.appendChild(o);});
+  mgCount();
+}
+function mgRender(){
+  var byId={};MG.lots.forEach(function(l){byId[l.id]=l;});
+  var dn=$('mg-done');dn.textContent='';var merged=MG.lots.filter(function(l){return l.into;});
+  if(!merged.length)dn.appendChild(el('div','cnt','Слияний пока нет.'));
+  else{var rows=merged.map(function(l){var to=byId[l.into];return[l.title,l.id,String(l.orders),to?to.title:('ID '+l.into),l.into];});
+    var t=tbl(['Старый лот','ID','Заказов','Объединён с','ID'],rows,[2]);
+    Array.prototype.forEach.call(t.querySelectorAll('tbody tr'),function(tr,i){var l=merged[i],td=el('td','btns'),b=el('button','b','Разъединить');b.type='button';
+      b.addEventListener('click',function(){if(!confirm('Разъединить «'+l.title.slice(0,60)+'»? Он снова будет считаться отдельным лотом.'))return;
+        ap('/api/stat/v1/lot_unmerge',{from:l.id}).then(function(){say('Лоты разъединены.');mgLoad();}).catch(function(e){say(e.message,true);});});
+      td.appendChild(b);tr.appendChild(td);});
+    var hr=t.querySelector('thead tr');hr.appendChild(el('th','',''));dn.appendChild(t);}
+  var al=$('mg-all');al.textContent='';var q=$('mg-q').value.trim().toLowerCase();
+  var sh=MG.lots.filter(function(l){return !q||mgLabel(l).toLowerCase().indexOf(q)>=0;});
+  al.appendChild(tbl(['Название','ID','Заказов','Последний заказ','Где виден','Статус'],sh.map(function(l){
+    return[l.title,l.id,String(l.orders),l.last||'—',l.in_profile?'профиль':(l.src==='заказы'?(l.syn?'только в заказах (нет в профиле)':'заказы'):l.src),l.into?('объединён с ID '+l.into):''];}),[2]));
+}
+function mgLoad(){
+  return ap('/api/lots/merge_list',{offers:$('mg-offers').checked}).then(function(d){
+    MG.lots=d.lots;mgFill();mgRender();
+    if(d.offers_error)say(d.offers_error,true);else say('');
+    if(!d.lots.length)$('mg-res').textContent='Лотов пока нет: на вкладке «Статистика» нажмите «Загрузить заказы» и «Загрузить детали заказов» или включите галочку «добавить мои лоты с аккаунта».';
+  }).catch(function(e){say(e.message,true);});
+}
+$('mg-load').addEventListener('click',mgLoad);
+$('mg-q').addEventListener('input',function(){mgFill();mgRender();});
+$('mg-go').addEventListener('click',function(){
+  var t=$('mg-to').value,froms=Object.keys(MG.sel).filter(function(k){return k!==t;});
+  if(!froms.length||!t){say('Отметьте старые лоты и выберите новый лот.',true);return;}
+  var by={};MG.lots.forEach(function(l){by[l.id]=l;});
+  var titles={};froms.forEach(function(k){titles[k]=by[k].title;});
+  if(!confirm('Объединить в «'+by[t].title.slice(0,70)+'» (ID '+t+') лоты:\n\n'+froms.map(function(k){return '• '+by[k].title.slice(0,70)+' (ID '+k+')';}).join('\n')+'\n\nЗаказы, себестоимость, акция и правила наград старых лотов перейдут к новому.'))return;
+  ap('/api/lots/merge',{froms:froms,to:t,from_titles:titles,to_title:by[t].title}).then(function(r){
+    MG.sel={};$('mg-res').textContent=r.note||'';say('Лотов объединено: '+r.merged+'.');return mgLoad();}).catch(function(e){say(e.message,true);});
 });
 
 /* ---------- вкладки ---------- */
@@ -963,7 +1250,7 @@ function show(v){
   TABS.forEach(function(t){$('v-'+t[0]).style.display=(t[0]===v)?'block':'none';$('tab-'+t[0]).className='tab'+(t[0]===v?' cur':'');});
   $('bar-snap').style.display=(v==='marks'||v==='prices')?'flex':'none';
   if(v==='prices')loadPrices();if(v==='data')loadData();if(v==='hist')loadHist();if(v==='acc')loadAcc();
-  if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='stats')needLogin('st',stReport);
+  if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='auto')apLoad(true);if(v==='merge')mgLoad();if(v==='stats')needLogin('st',function(){stReport();sv1All();});
   try{history.replaceState(null,'','#'+v);}catch(e){}
 }
 function refresh(){load($('snap').value).then(function(){if(view==='prices')loadPrices();});}
@@ -973,6 +1260,53 @@ $('quit').addEventListener('click',function(){
   if(!confirm('Выключить программу? Отметки уже сохранены.'))return;
   ap('/api/quit').then(function(){document.body.textContent='Программа выключена. Эту вкладку можно закрыть.';}).catch(function(e){say(e.message,true);});
 });
-load('').then(function(){var h=(location.hash||'').replace('#','');var ok=TABS.some(function(t){return t[0]===h;});show(ok?h:'marks');});
+
+/* ---------- Автопилот ---------- */
+function apFill(st,force){
+  var c=st.cfg;
+  if(force||!AP_DIRTY){$('ap-enabled').checked=c.enabled;$('ap-every').value=c.every_min;$('ap-max').value=c.max_sends;$('ap-age').value=c.max_age_days;
+    $('ap-remind').checked=c.remind;$('ap-review').checked=c.review_request;$('ap-reward').checked=c.reward;$('ap-ticket').checked=c.ticket_prepare;$('ap-raise').checked=!!c.raise;$('ap-refund').checked=c.refund;$('ap-rbelow').value=c.refund_below;$('ap-rmax').value=c.refund_max_price;$('ap-text').value=c.remind_text;}
+  var s=$('ap-state'),r=st.ready||{},any=c.remind||c.review_request||c.reward||c.refund;
+  s.className='state '+((st.paused||st.locked||!st.logged)?'bad':'ok');
+  s.textContent=(st.locked?'Сессия заблокирована сайтом. ':(!st.logged?'Нет входа в аккаунт. ':''))+(st.paused?'Отправки на паузе. ':'')
+    +(c.enabled?'Автопилот работает':'Автопилот выключен')+(st.running?' (идёт цикл)':'')+(st.ended?'; последний цикл: '+st.ended.replace('T',' '):'')+(st.next&&c.enabled?'; следующий: '+st.next.replace('T',' '):'')
+    +'. Готово к отправке: напоминаний '+(r.remind||0)+', просьб об отзыве '+(r.review_request||0)+', наград '+(r.reward||0)+', возвратов '+(r.refund||0)+(any?'.':' (отправки выключены).');
+  $('ap-resume').style.display=st.paused?'inline-block':'none';
+  var box=$('ap-steps');box.textContent='';
+  if(!st.steps.length)box.appendChild(el('div','cnt','Цикл ещё не выполнялся: первый запуск через ~45 секунд после старта программы.'));
+  else box.appendChild(tbl(['Шаг','Результат'],st.steps.map(function(x){return [x.name+(x.ok?'':' (!)'),x.text];})));
+  var lg=$('ap-log');lg.textContent='';
+  if(st.log.length)lg.appendChild(tbl(['Время','Шаг','Результат'],st.log.map(function(x){return [x.time.replace('T',' '),x.step,(x.ok?'':'(!) ')+x.text];})));
+}
+var AP_DIRTY=false;
+['ap-enabled','ap-every','ap-max','ap-age','ap-remind','ap-review','ap-reward','ap-ticket','ap-text','ap-refund','ap-rbelow','ap-rmax'].forEach(function(id){$(id).addEventListener('input',function(){AP_DIRTY=true;});});
+function apLoad(force){return api('/api/autopilot/status').then(function(st){apFill(st,force);apBanner(st);}).catch(function(e){say(e.message,true);});}
+function apBanner(st){
+  var b=$('ap-banner'),a=st.attention||[];
+  if(!a.length){b.style.display='none';document.title='FunPay Detector';return;}
+  b.textContent=a.map(function(x){return x.text;}).join(' · ');b.style.display='block';document.title='(!) FunPay Detector';
+}
+$('ap-banner').addEventListener('click',function(){show('auto');});
+$('ap-save').addEventListener('click',function(){
+  var nolim=Number($('ap-max').value)===0;
+  var on=[['ap-remind','напоминания покупателям'],['ap-review','просьбы об отзыве'],['ap-reward','награды'],['ap-refund','ВОЗВРАТ ДЕНЕГ при оценке ниже '+$('ap-rbelow').value+(Number($('ap-rmax').value)>0?' (сумма до '+$('ap-rmax').value+' ₽)':' (сумма без ограничения)')]].filter(function(p){return $(p[0]).checked;});
+  if(on.length&&!confirm('Включить автоотправку: '+on.map(function(p){return p[1];}).join(', ')+'?\nСообщения будут уходить покупателям сами, без подтверждения, пока программа открыта.'+(nolim?'\nЛимит сообщений за цикл снят: уйдут ВСЕ готовые (по возвратам остаётся не больше 3 за цикл).':'')))return;
+  ap('/api/autopilot/settings',{enabled:$('ap-enabled').checked,every_min:Number($('ap-every').value),max_sends:Number($('ap-max').value),max_age_days:Number($('ap-age').value),
+    remind:$('ap-remind').checked,review_request:$('ap-review').checked,reward:$('ap-reward').checked,refund:$('ap-refund').checked,refund_below:Number($('ap-rbelow').value),refund_max_price:Number($('ap-rmax').value),ticket_prepare:$('ap-ticket').checked,raise:$('ap-raise').checked,remind_text:$('ap-text').value})
+   .then(function(){AP_DIRTY=false;say('Настройки сохранены.');return apLoad(true);}).catch(function(e){say(e.message,true);});
+});
+$('ap-run').addEventListener('click',function(){ap('/api/autopilot/run').then(function(){say('Цикл запущен, результат появится через минуту.');setTimeout(function(){apLoad(false);},5000);}).catch(function(e){say(e.message,true);});});
+$('ap-resume').addEventListener('click',function(){ap('/api/autopilot/resume').then(function(){return apLoad(false);}).catch(function(e){say(e.message,true);});});
+setInterval(function(){if(view==='auto')apLoad(false);else api('/api/autopilot/status').then(apBanner).catch(function(){});},30000);
+function autoLogin(){
+  return api('/api/acc/status').then(function(s){
+    AC.logged=s.logged;
+    if(s.logged||!s.keyfile||s.locked)return;
+    say('Вхожу в аккаунт по golden_key.txt…');
+    return ap('/api/acc/login',{key:'',use_file:true,remember:false}).then(function(){AC.logged=true;say('');}).catch(function(e){say('Автовход не удался: '+e.message,true);});
+  }).catch(function(){});
+}
+api('/api/autopilot/status').then(apBanner).catch(function(){});
+load('').then(autoLogin).then(function(){var h=(location.hash||'').replace('#','');var ok=TABS.some(function(t){return t[0]===h;});show(ok?h:'marks');});
 })();
 </script></body></html>
