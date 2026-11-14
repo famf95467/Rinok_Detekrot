@@ -110,6 +110,9 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <div class="legend"><p>В каждый день берётся последний снимок. <b>Пропал</b> не значит «продан». <b>Прирост отзывов</b> — оценка, не факт.</p></div></div></section>
 
 <section id="v-acc" style="display:none">
+<div id="im-box" class="box" style="max-width:540px;display:none"><h3 style="margin-top:0">Импорт данных с ПК</h3>
+<div class="cnt">Один раз после первого запуска: выберите zip из папки программы (json, csv, history, reports, tickets). golden_key.txt пропускается. Совпадающие файлы заменяются. После импорта перезапустите сервис в Railway.</div>
+<div class="bar" style="margin-top:10px"><input type="file" id="im-file" accept=".zip"><button type="button" id="im-go">Загрузить</button></div><div class="cnt" id="im-res"></div></div>
 <div id="ac-login" class="box" style="max-width:540px"><h3 style="margin-top:0">Вход в FunPay</h3>
 <div class="cnt">Вставьте cookie golden_key. Он даёт полный доступ к аккаунту, никому его не отправляйте. Ключ хранится только в памяти программы.</div>
 <div style="margin:10px 0"><input type="password" id="ac-key" autocomplete="off" placeholder="golden_key" class="full"></div>
@@ -263,6 +266,7 @@ var lots=[],filter='none',data={},view='marks',pdata=null,pollT=null;
 function $(id){return document.getElementById(id);}
 function say(t,bad){var b=$('msg');b.textContent=t||'';b.className='msg'+(bad?' bad':'');b.style.display=t?'block':'none';}
 function api(url,opts){return fetch(url,opts).then(function(r){return r.json().catch(function(){return {};}).then(function(j){if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j;});},function(){throw new Error('Программа не отвечает. Проверьте, что чёрное окно не закрыто.');});}
+document.addEventListener('click',function(e){if(!e.target||e.target.id!=='im-go')return;var f=$('im-file').files[0],r=$('im-res');if(!f){r.textContent='Выберите zip-файл.';return;}if(!confirm('Загрузить '+f.name+' и заменить совпадающие файлы данных?'))return;r.textContent='Загрузка…';fetch('/api/import_zip',{method:'POST',headers:{'Content-Type':'application/zip'},body:f}).then(function(x){return x.json();}).then(function(j){r.textContent=j.error?('Ошибка: '+j.error):('Готово: файлов '+j.files+', пропущено '+j.skipped+(j.skipped_sample&&j.skipped_sample.length?' ('+j.skipped_sample.join(', ')+')':'')+'. Теперь перезапустите сервис в Railway.');}).catch(function(x){r.textContent='Ошибка: '+x.message;});});
 function ap(u,b){return api(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});}
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
 function numOrNull(v){var x=parseFloat(String(v).replace(',','.'));return isNaN(x)?null:x;}
@@ -520,7 +524,7 @@ function loadAcc(){
   return api('/api/acc/status').then(function(s){
     AC.logged=s.logged;
     $('ac-login').style.display=s.logged?'none':'block';$('ac-main').style.display=s.logged?'block':'none';
-    $('ac-file').style.display=s.keyfile?'inline-block':'none';$('ac-forget').style.display=(s.keyfile&&!s.cloud)?'inline-block':'none';if(s.cloud&&$('quit'))$('quit').style.display='none';
+    $('ac-file').style.display=s.keyfile?'inline-block':'none';$('ac-forget').style.display=(s.keyfile&&!s.cloud)?'inline-block':'none';if(s.cloud&&$('quit'))$('quit').style.display='none';if(s.cloud&&$('im-box'))$('im-box').style.display='block';
     if(s.locked)say('Сессия аккаунта остановлена: сайт ответил блокировкой или проверкой. Запросы отключены до перезапуска программы.',true);
     if(!s.logged)return;
     $('ac-nick').textContent=s.nick;$('ac-id').textContent='ID: '+s.uid;

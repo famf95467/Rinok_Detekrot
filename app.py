@@ -23,6 +23,7 @@ README.md (карта проекта для людей и агентов: чит
 
 Запуск: «Запустить.bat» или `python app.py`. Нужны только Python 3 и beautifulsoup4.
 """
+import zipfile, io
 import argparse, base64, collections, csv, datetime, gzip, hashlib, hmac, json, os, random, re, secrets, shutil, socket
 import statistics, subprocess, sys, threading, time, traceback, webbrowser
 import urllib.error, urllib.parse, urllib.request
@@ -41,7 +42,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.11'
+VERSION = '1.12'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5433,6 +5434,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._local_ok():
             return self._send(403, {'error': 'Недопустимый адрес'})
+        if CLOUD and urlparse(self.path).path == '/api/import_zip':
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > IMPORT_MAX:
+                    return self._send(400, {'error': 'Архив пустой или больше 300 МБ.'})
+                return self._send(*import_zip(self.rfile.read(n)))
+            except Exception as e:
+                traceback.print_exc()
+                return self._send(500, {'error': f'{type(e).__name__}: {e}'})
         try:
             n = int(self.headers.get('Content-Length') or 0)
             body = json.loads(self.rfile.read(min(n, 200000)) or b'{}')
@@ -5455,6 +5465,42 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             return self._send(500, {'error': f'{type(e).__name__}: {e}'})
+
+
+IMPORT_MAX = 300 * 1024 * 1024
+IMPORT_DIRS = {'history', 'reports', 'tickets', 'pages', 'pages_own', 'out'}
+
+
+def import_zip(data):
+    """Облако: разовый перенос данных с ПК. Только .json/.csv рядом с программой и известные папки; golden_key.txt пропускается."""
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return 400, {'error': 'Это не zip-архив.'}
+    infos = [i for i in z.infolist() if not i.is_dir()]
+    if sum(i.file_size for i in infos) > IMPORT_MAX * 3:
+        return 400, {'error': 'Архив слишком большой после распаковки.'}
+    ok, skipped = 0, []
+    for i in infos:
+        parts = [p for p in i.filename.replace('\\', '/').split('/') if p]
+        # архив мог быть собран вместе с папкой: если первый элемент не наш, отрезаем его
+        if len(parts) > 1 and parts[0] not in IMPORT_DIRS and not parts[0].lower().endswith(('.json', '.csv', '.htm', '.html', '.txt')):
+            parts = parts[1:]
+        name = parts[-1] if parts else ''
+        if (not parts or any(p in ('.', '..') or ':' in p for p in parts) or name.lower() == 'golden_key.txt'
+                or (len(parts) == 1 and not name.lower().endswith(('.json', '.csv')))
+                or (len(parts) > 1 and parts[0] not in IMPORT_DIRS)):
+            skipped.append(i.filename)
+            continue
+        dest = os.path.realpath(os.path.join(DATA_DIR, *parts))
+        if not dest.startswith(os.path.realpath(DATA_DIR) + os.sep):
+            skipped.append(i.filename)
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with z.open(i) as src, open(dest, 'wb') as out:
+            shutil.copyfileobj(src, out)
+        ok += 1
+    return 200, {'ok': True, 'files': ok, 'skipped': len(skipped), 'skipped_sample': skipped[:8]}
 
 
 def make_server():
