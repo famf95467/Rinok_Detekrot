@@ -42,7 +42,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.12.1'
+VERSION = '1.12.2'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1658,8 +1658,8 @@ def raise_node(node):
         raise SiteStop(f'Не нашёл: {what}. Ничего не отправлено. Страница сохранена: {out} (токены вырезаны), пришлите её мне.')
     # Как в браузере: 1-й запрос (game_id, node_id). Если у игры есть другие ваши разделы, сайт отвечает окном
     # с галочками (node_ids[]): 2-м запросом отправляем ВСЕ разделы из окна, тогда поднимаются все сразу.
-    def post(ids):
-        data = [('game_id', str(game)), ('node_id', str(node_id))] + [('node_ids[]', str(n)) for n in ids]
+    def post(ids, gid=None):
+        data = [('game_id', str(gid or game)), ('node_id', str(node_id))] + [('node_ids[]', str(n)) for n in ids]
         _, _, text = site_request('/lots/raise', ACC['key'], data=data, referer=page)
         return text
 
@@ -1684,7 +1684,11 @@ def raise_node(node):
     if modal:
         ms = BeautifulSoup(str(modal), 'html.parser')
         ids = []
-        for i in ms.select('input[name="node_ids[]"]'):
+        box = ms.select_one('.raise-box')
+        mgame = str(box.get('data-game') or '') if box else ''
+        mgame = mgame if re.fullmatch(r'\d{1,10}', mgame) else None
+        # у окна поля могут быть без name (так на сайте сейчас): берём все галочки окна
+        for i in (ms.select('input[name="node_ids[]"]') or ms.select('input[type="checkbox"]')):
             v = str(i.get('value') or '')
             if re.fullmatch(r'\d{1,10}', v) and v not in ids:
                 ids.append(v)
@@ -1698,7 +1702,7 @@ def raise_node(node):
                 shown = shown.replace(w, w[:2] + '-' + w[2:])
             raise SiteStop(f'Сайт показал окно выбора разделов, но галочек в нём не нашёл. Ничего не отправлено. '
                            f'Окно сохранено: {out}. РАЗМЕТКА ОКНА (скопируйте всё и пришлите мне): {shown}')
-        msg, _m2, err, wait = parse(post(ids))
+        msg, _m2, err, wait = parse(post(ids, mgame))
         raised = ids
         msg = f'поднимаю разделов: {len(ids)}. ' + msg
     return {'node': node, 'msg': re.sub(r'\s+', ' ', msg).strip()[:400], 'modal': False, 'error': err,
