@@ -42,7 +42,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.13'
+VERSION = '1.14'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1429,7 +1429,7 @@ ROUTES_DETECTOR = {
 # Ключ golden_key хранится только в памяти; в golden_key.txt пишется лишь по галочке «Запомнить» (простым текстом).
 # Правка лота двухшаговая: preview_edit («было → стало», ничего не отправляется) и отдельная кнопка apply_edit.
 # Все запросы к сайту идут через guarded(): один замок, остановка сессии при блокировке/капче/редиректе.
-ACC = {'key': None, 'me': None, 'avatar': None, 'forms': {}, 'pending': None, 'locked': False}
+ACC = {'key': None, 'me': None, 'avatar': None, 'forms': {}, 'pending': None, 'locked': False, 'key_bad': '', 'key_bad_at': 0.0}
 ACC_LOCK = threading.Lock()
 LOCK_WORDS = ('Сайт ответил HTTP', 'капч', 'перенаправил')
 AMOUNT_FRESH_SEC = 300
@@ -1461,6 +1461,8 @@ def guarded(fn):
             return 200, fn()
     except SiteStop as s:
         msg = str(s)
+        if 'ключ недействителен' in msg:
+            ACC['key_bad'], ACC['key_bad_at'] = 'сайт перенаправил на страницу входа: golden_key перестал действовать.', time.time()
         if any(w in msg for w in LOCK_WORDS):
             ACC['locked'] = True
             msg += ' Сессия заблокирована: ничего не повторяется и не обходится.'
@@ -1498,6 +1500,8 @@ def acc_login(key, remember):
     _, _, home = site_request('/', key)
     uid = app_data(home).get('userId')
     if not uid:
+        if key == ENV_KEY or not ACC['key']:        # неверно набранный ключ при рабочем входе плашку «ключ не работает» не включает
+            ACC['key_bad'], ACC['key_bad_at'] = 'сайт не узнал ключ (нет ID на главной странице).', time.time()
         raise SiteStop('Ключ не подошёл: сайт вас не узнал (нет ID). Проверьте golden_key.')
     soup = BeautifulSoup(home, 'html.parser')
     nick_el = soup.select_one('.user-link-name')
@@ -1507,7 +1511,7 @@ def acc_login(key, remember):
         mt = re.search(r'url\(["\']?([^)"\']+)', el.get('style', ''))
         url = mt.group(1) if mt else None
     ACC.update(key=key, me={'uid': str(uid), 'nick': nick_el.get_text(strip=True) if nick_el else '(ник не найден)'},
-               avatar=fetch_avatar(url), forms={}, pending=None)
+               avatar=fetch_avatar(url), forms={}, pending=None, key_bad='', key_bad_at=0.0)
     if remember and not CLOUD:
         with open(KEYFILE, 'w', encoding='utf-8') as f:
             f.write(key)
@@ -3955,7 +3959,8 @@ def ap_cycle():
     if not network_ok():
         AP['steps'].append({'name': 'сеть', 'ok': False, 'text': 'нет сети, цикл пропущен (повтор в следующем цикле)'})
         return
-    if not ACC['key'] and not ACC['locked'] and (ENV_KEY or os.path.exists(KEYFILE)):
+    key_retry = not ACC.get('key_bad') or time.time() - ACC.get('key_bad_at', 0.0) > 6 * 3600   # плохой ключ перепроверяется раз в 6 часов
+    if not ACC['key'] and not ACC['locked'] and key_retry and (ENV_KEY or os.path.exists(KEYFILE)):
         key = ENV_KEY
         if not key:
             try:
@@ -3967,7 +3972,8 @@ def ap_cycle():
             ap_step('Вход по golden_key.txt', lambda: acc_login(key, False))
     if not ACC['key'] or ACC['locked']:
         AP['steps'].append({'name': 'вход', 'ok': False, 'text': 'сессия заблокирована сайтом' if ACC['locked']
-                            else 'не выполнен вход: войдите на вкладке «Аккаунт» или положите golden_key.txt'})
+                            else ('ключ не принят сайтом, автовход приостановлен (повтор раз в 6 часов): замените golden_key'
+                                  if ACC.get('key_bad') else 'не выполнен вход: войдите на вкладке «Аккаунт» или положите golden_key.txt')})
         return
     # ---- чтение ----
     full = ap_due('orders_full', 60)                     # раз в час список заказов читается до конца (все страницы)
@@ -4153,8 +4159,11 @@ def ap_attention():
     out = []
     if AP['paused']:
         out.append({'kind': 'pause', 'text': 'Автоотправка на паузе: ' + AP['paused']})
-    if ACC['locked']:
+    if ACC.get('key_bad'):
+        out.append({'kind': 'key', 'text': 'golden_key не работает: ' + ACC['key_bad'] + ' Замените ключ (переменная FUNPAY_GOLDEN_KEY в Railway или вход на вкладке «Аккаунт»).'})
+    if ACC['locked'] and not ACC.get('key_bad'):
         out.append({'kind': 'lock', 'text': 'Сайт заблокировал сессию (блокировка или проверка). Автопилот остановлен до перезапуска.'})
+    out += sec_attention()
     try:
         d = conf_load()
         n = sum(1 for o in d['orders'].values() if o.get('ticket_at') and not o.get('ticket_sent_at') and o['status'] not in CONF_DONE)
@@ -5473,6 +5482,191 @@ def h_backup_make(_b=None):
     return 200, {'ok': True, 'name': name}
 
 
+# ===== Защита входа (облако) ===========================================================================
+# Пароль проверяется на каждый запрос (HTTP Basic). Здесь: лимит РАЗНЫХ неверных паролей на один IP, журнал входов
+# (login_log.csv), список известных IP (login_state.json) и оповещения плашкой. Пароли в журнал и на диск не пишутся
+# (в памяти только короткий хеш попытки, чтобы одну и ту же неверную попытку из открытой вкладки не считать много раз).
+SEC_LOG = P('login_log.csv')
+SEC_STATE = P('login_state.json')
+SEC_LOCK = threading.Lock()
+SEC_DISTINCT = 5                                # столько разных неверных паролей с одного IP за окно => блокировка IP
+SEC_WINDOW = 900                                # окно подсчёта, секунд
+SEC_LOCK_STEPS = (900, 3600, 21600, 86400)      # блокировка: 15 мин, 1 ч, 6 ч, 24 ч (растёт при повторах за 7 дней)
+SEC_SESSION_GAP = 1800                          # «вход» пишется в журнал не чаще раза в 30 минут на пару «IP + браузер»
+SEC_FAILS = {}                                  # ip -> {'h': {хеш: время}, 'until': время, 'n': блокировок, 'last': время, 'logged': bool}
+SEC_SEEN = {}                                   # (ip, браузер) -> время последнего запроса с верным паролем
+SEC_EVENTS = collections.deque(maxlen=300)      # (время ISO, ip, событие, примечание)
+SEC_COLS = ['время', 'ip', 'событие', 'браузер', 'примечание']
+
+
+def sec_ip(h):
+    """IP клиента. За прокси Railway берётся последний адрес из X-Forwarded-For (его дописал ближайший прокси, подделать нельзя)."""
+    parts = [x.strip() for x in (h.headers.get('X-Forwarded-For') or '').split(',') if x.strip()]
+    ip = parts[-1] if parts else h.client_address[0]
+    return re.sub(r'[^0-9a-fA-F:.]', '', ip)[:45] or '?'
+
+
+def sec_ua(h):
+    ua = re.sub(r'[\x00-\x1f;]', ' ', (h.headers.get('User-Agent') or ''))[:80].strip()
+    return ("'" + ua) if ua[:1] in ('=', '+', '-', '@') else ua       # в Excel строка не станет формулой
+
+
+def sec_state():
+    d = read_json(SEC_STATE, {})
+    return d if isinstance(d, dict) else {}
+
+
+def sec_state_save(d):
+    try:
+        write_json_atomic(SEC_STATE, d)
+    except OSError:
+        pass
+
+
+def sec_trim():
+    try:
+        with open(SEC_LOG, encoding='utf-8-sig', newline='') as f:
+            rows = list(csv.reader(f, delimiter=';'))
+        keep = rows[:1] + rows[-1500:] if len(rows) > 1501 else rows
+        tmp = SEC_LOG + '.tmp'
+        with open(tmp, 'w', encoding='utf-8-sig', newline='') as f:
+            csv.writer(f, delimiter=';').writerows(keep)
+        os.replace(tmp, SEC_LOG)
+    except OSError:
+        pass
+
+
+def sec_log(ip, event, ua='', note=''):
+    now = datetime.datetime.now().replace(microsecond=0)
+    SEC_EVENTS.append((now.isoformat(), ip, event, note))
+    try:
+        new = not os.path.exists(SEC_LOG)
+        if not new and os.path.getsize(SEC_LOG) > 400000:
+            sec_trim()
+        with open(SEC_LOG, 'a', encoding='utf-8-sig', newline='') as f:
+            w = csv.writer(f, delimiter=';')
+            if new:
+                w.writerow(SEC_COLS)
+            w.writerow([now.isoformat(sep=' '), ip, event, ua, note])
+    except OSError:
+        pass
+
+
+def sec_load_events():
+    """При старте: последние строки журнала попадают в память (плашка и таблица переживают перезапуск)."""
+    try:
+        with open(SEC_LOG, encoding='utf-8-sig', newline='') as f:
+            for r in list(csv.DictReader(f, delimiter=';'))[-300:]:
+                t = (r.get('время') or '').replace(' ', 'T')
+                if t:
+                    SEC_EVENTS.append((t, r.get('ip') or '', r.get('событие') or '', r.get('примечание') or ''))
+    except OSError:
+        pass
+
+
+def sec_locked_left(ip):
+    with SEC_LOCK:
+        st = SEC_FAILS.get(ip)
+        return max(0, int(st['until'] - time.time())) if st else 0
+
+
+def sec_blocked(ip, ua):
+    """Отказ из-за блокировки пишется в журнал один раз на блокировку, чтобы журнал не заливало."""
+    with SEC_LOCK:
+        st = SEC_FAILS.get(ip)
+        first = bool(st) and not st['logged']
+        if first:
+            st['logged'] = True
+    if first:
+        sec_log(ip, 'отказ: IP заблокирован', ua)
+
+
+def sec_fail(ip, attempt, ua):
+    now = time.time()
+    locked_for = 0
+    with SEC_LOCK:
+        if len(SEC_FAILS) > 5000:
+            for k in [k for k, v in SEC_FAILS.items() if v['until'] < now and not v['h']][:2500]:
+                SEC_FAILS.pop(k, None)
+        st = SEC_FAILS.setdefault(ip, {'h': {}, 'until': 0.0, 'n': 0, 'last': 0.0, 'logged': False})
+        st['h'] = {k: t for k, t in st['h'].items() if now - t < SEC_WINDOW}
+        if attempt in st['h']:
+            return                                          # та же неверная попытка (например, опрос из открытой вкладки)
+        st['h'][attempt] = now
+        count = len(st['h'])
+        if count >= SEC_DISTINCT:
+            if now - st['last'] > 7 * 86400:
+                st['n'] = 0
+            locked_for = SEC_LOCK_STEPS[min(st['n'], len(SEC_LOCK_STEPS) - 1)]
+            st['n'] += 1
+            st['last'], st['until'], st['h'], st['logged'] = now, now + locked_for, {}, False
+    sec_log(ip, 'неверный пароль', ua, f'разных попыток подряд: {count}')
+    if locked_for:
+        sec_log(ip, 'блокировка IP', ua, f'на {locked_for // 60} мин')
+
+
+def sec_success(ip, ua):
+    now = time.time()
+    with SEC_LOCK:
+        st = SEC_FAILS.get(ip)
+        if st:
+            st['h'] = {}
+        last = SEC_SEEN.get((ip, ua), 0.0)
+        SEC_SEEN[(ip, ua)] = now
+        if len(SEC_SEEN) > 2000:
+            SEC_SEEN.clear()
+        if now - last < SEC_SESSION_GAP:
+            return
+        state = sec_state()
+        known = state.get('known') if isinstance(state.get('known'), dict) else {}
+        first_ever, is_new = not known, ip not in known
+        known[ip] = datetime.datetime.now().replace(microsecond=0).isoformat()
+        if len(known) > 200:
+            for k in sorted(known, key=known.get)[:len(known) - 200]:
+                known.pop(k, None)
+        state['known'] = known
+        sec_state_save(state)
+    sec_log(ip, 'вход (первый запуск защиты, IP запомнен)' if first_ever else ('вход с нового IP' if is_new else 'вход'), ua)
+
+
+def sec_attention():
+    """Плашка для всех вкладок: что случилось со входом после последнего «Принято»."""
+    if not CLOUD:
+        return []
+    ack = str(sec_state().get('ack') or '')
+    ev = [e for e in SEC_EVENTS if e[0] > ack]
+    bad = [e for e in ev if e[2] == 'неверный пароль']
+    locks = [e for e in ev if e[2] == 'блокировка IP']
+    news = [e for e in ev if e[2] == 'вход с нового IP']
+    out = []
+    if locks or len(bad) >= 3:
+        ips = len({e[1] for e in bad + locks})
+        out.append({'kind': 'security', 'text': f'Защита входа: неверных паролей {len(bad)}, блокировок IP {len(locks)}, адресов {ips}. '
+                                                'Журнал на вкладке «Аккаунт», там же «Принято».'})
+    if news:
+        e = news[-1]
+        out.append({'kind': 'security', 'text': f'Вход с нового IP {e[1]} ({e[0].replace("T", " ")}). Если это не вы, смените APP_PASSWORD и golden_key.'})
+    return out
+
+
+def h_security(_q=None):
+    now = time.time()
+    with SEC_LOCK:
+        locked = [{'ip': ip, 'min': -(-int(st['until'] - now) // 60)} for ip, st in SEC_FAILS.items() if st['until'] > now]
+    ev = [{'time': e[0].replace('T', ' '), 'ip': e[1], 'event': e[2], 'note': e[3]} for e in list(SEC_EVENTS)[-40:][::-1]]
+    return 200, {'cloud': CLOUD, 'events': ev, 'locked': locked, 'attention': sec_attention(),
+                 'key': {'logged': bool(ACC['key']), 'bad': ACC.get('key_bad', ''), 'env': bool(ENV_KEY), 'locked': ACC['locked']},
+                 'limits': f'{SEC_DISTINCT} разных неверных паролей за {SEC_WINDOW // 60} мин с одного IP: блокировка этого IP на 15 мин, '
+                           'при повторах 1 ч, 6 ч, 24 ч.'}
+
+
+def h_security_ack(_b=None):
+    state = sec_state()
+    state['ack'] = datetime.datetime.now().replace(microsecond=0).isoformat()
+    sec_state_save(state)
+    return 200, {'ok': True}
+
+
 # ===== 10. HTTP-сервер и таблица маршрутов =============================================================
 # Слушает только 127.0.0.1. Страницу (ui.html) отдаёт с политикой CSP: браузер не даст ей грузить ничего снаружи
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
@@ -5483,6 +5677,8 @@ for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROU
         ROUTES[_method].update(_routes[_method])
 ROUTES['GET']['/api/backups'] = h_backups_list
 ROUTES['POST']['/api/backups/make'] = h_backup_make
+ROUTES['GET']['/api/security'] = h_security
+ROUTES['POST']['/api/security/ack'] = h_security_ack
 
 
 class Server(ThreadingHTTPServer):
@@ -5531,28 +5727,48 @@ class Handler(BaseHTTPRequestHandler):
             name = 'funpay-backup-' + datetime.date.today().isoformat() + ('-pages' if with_pages else '') + '.zip'
             return self._send_stream(f, size, name)
 
+    def _deny(self, code, text, www=False, retry=0):
+        body = text.encode('utf-8')
+        self.send_response(code)
+        if www:
+            self.send_header('WWW-Authenticate', 'Basic realm="FunPay Detector", charset="UTF-8"')
+        if retry:
+            self.send_header('Retry-After', str(retry))
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _auth_ok(self):
-        """Облако: вход по логину и паролю (HTTP Basic, пароль из переменной APP_PASSWORD), с задержкой при ошибках."""
+        """Облако: вход по логину и паролю (HTTP Basic, пароль из переменной APP_PASSWORD). Неверный пароль: задержка 1,5 с.
+        Пять РАЗНЫХ неверных паролей с одного IP за 15 минут блокируют этот IP (15 мин, потом 1 ч, 6 ч, 24 ч); заблокированному
+        IP не отвечают и на верный пароль. Все входы и ошибки пишутся в login_log.csv (без паролей)."""
         if not CLOUD:
             return True
+        ip, ua = sec_ip(self), sec_ua(self)
+        left = sec_locked_left(ip)
+        if left > 0:
+            sec_blocked(ip, ua)
+            self._deny(429, f'Слишком много неверных паролей. Повторите через {-(-left // 60)} мин.', retry=left)
+            return False
         user = os.environ.get('APP_USER', 'admin')
         pw = os.environ.get('APP_PASSWORD', '')
+        header = self.headers.get('Authorization') or ''
+        raw = ''
         try:
-            raw = base64.b64decode((self.headers.get('Authorization') or '')[6:]).decode('utf-8')
+            raw = base64.b64decode(header[6:]).decode('utf-8')
             u, _, p = raw.partition(':')
             ok = hmac.compare_digest(u.encode(), user.encode()) & hmac.compare_digest(p.encode(), pw.encode())
         except Exception:
             ok = False
-        if not ok:
-            time.sleep(1.5)
-            body = 'Нужен логин и пароль'.encode('utf-8')
-            self.send_response(401)
-            self.send_header('WWW-Authenticate', 'Basic realm="FunPay Detector", charset="UTF-8"')
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        return ok
+        if ok:
+            sec_success(ip, ua)
+            return True
+        if header:                                  # первый запрос браузера без пароля попыткой не считается
+            sec_fail(ip, hashlib.sha256(f'{ip}|{raw or header}'.encode('utf-8')).hexdigest()[:16], ua)
+        time.sleep(1.5)
+        self._deny(401, 'Нужен логин и пароль', www=True)
+        return False
 
     def _local_ok(self):
         if CLOUD:                       # адрес любой (домен Railway), доступ защищён паролем; Origin должен совпадать с Host
@@ -5720,6 +5936,9 @@ def cmd_serve():
     threading.Thread(target=auto_loop, daemon=True).start()   # вход по ключу из переменной делает цикл автопилота
     threading.Thread(target=ap_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
+    if CLOUD:
+        sec_load_events()
+        print(f'Защита входа: {SEC_DISTINCT} разных неверных паролей с одного IP за {SEC_WINDOW // 60} мин блокируют IP, журнал: {SEC_LOG}')
     print('Автопилот: ' + ('включён' if ap_read()['enabled'] else 'выключен') + ', первый цикл через 45 с. Отправки сообщений включаются отдельно на вкладке «Автопилот».')
     try:
         srv.serve_forever()
