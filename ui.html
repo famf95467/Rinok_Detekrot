@@ -901,14 +901,17 @@ $('cf-sent').addEventListener('click',function(){
   ap('/api/confirm/ticket-sent',{ids:ids}).then(function(){CF.sel={};say('');return cfLoad();}).catch(function(e){say(e.message,true);});});
 
 /* ---------- Отзывы ---------- */
-var RV={cfg:null,orders:[],lots:[],rules:[]};
+var RV={cfg:null,orders:[],lots:[],rules:[],rev:0};
 function rvLoad(){
   return api('/api/review/list').then(function(d){
     RV.cfg=d.settings;RV.orders=d.orders;RV.lots=d.lots_seen||[];
     $('rv-sum').textContent='Подтверждённых заказов: '+d.total+'. Готовы к просьбе: '+d.ready+'. Просьба отправлена: '+d.sent+'. Готовы к выдаче награды: '+d.reward_ready+'.'+rvCostText(d.costs)+(d.total>d.orders.length?' Показаны первые '+d.orders.length+'.':'');
-    $('rv-def').value=d.settings.default;$('rv-delay').value=d.settings.delay_hours;
-    RV.rules=d.settings.lots.map(function(r){return JSON.parse(JSON.stringify(r));});
-    rvRules();rvRender();rvLog(d.log);
+    if(!RVS.dirty){
+      $('rv-def').value=d.settings.default;$('rv-delay').value=d.settings.delay_hours;RV.rev=d.settings.rev||0;
+      RV.rules=d.settings.lots.map(function(r){return JSON.parse(JSON.stringify(r));});
+      rvRules();
+    }else rvStamp('Есть несохранённые правки: данные с сервера не подставлены, чтобы не затереть их.',true);
+    rvRender();rvLog(d.log);
     if(!AC.rows.length&&!RV.triedMy){RV.triedMy=true;rvEnsureMyLots();}
   }).catch(function(e){say(e.message,true);});
 }
@@ -935,16 +938,23 @@ var RV_THANKS='Спасибо за отзыв на {stars} из 5! Ваша на
 function rvNewRule(){return{key:'',matches:[],text:$('rv-def').value,reward:{enabled:false,stars:5,units:1,unit_cost:0,type:'stock',endless_text:'',thanks:RV_THANKS}};}
 function rvIn(type,val,w){var i=el('input');i.type=type;i.value=val;if(w)i.style.width=w;return i;}
 /* автосохранение: правка -> через 0,7 с запись в папку проекта; при закрытии вкладки дописываем сразу */
-var RVS={t:null,dirty:false};
-function rvPayload(){return {default:$('rv-def').value,delay_hours:$('rv-delay').value,lots:RV.rules.filter(function(r){return r.matches.length;})};}
+var RVS={t:null,dirty:false,seq:0,chain:Promise.resolve()};
+function rvPayload(){return {rev:RV.rev,default:$('rv-def').value,delay_hours:$('rv-delay').value,lots:RV.rules.filter(function(r){return r.matches.length;})};}
 function rvStamp(t,bad){var s=$('rv-savest');s.textContent=t;s.style.color=bad?'var(--x)':'';}
-function rvAuto(){RVS.dirty=true;rvStamp('Изменения…');clearTimeout(RVS.t);RVS.t=setTimeout(function(){rvSave(true);},700);}
+function rvAuto(){RVS.dirty=true;RVS.seq++;rvStamp('Изменения…');clearTimeout(RVS.t);RVS.t=setTimeout(function(){rvSave(true);},700);}
 function rvSave(silent){
   clearTimeout(RVS.t);
-  return ap('/api/review/settings',rvPayload()).then(function(){
-    RVS.dirty=false;var n=new Date();rvStamp('Сохранено '+n.toLocaleTimeString('ru-RU'));
-    if(!silent)say('Шаблоны сохранены.');return true;
-  }).catch(function(e){rvStamp('НЕ сохранено: '+e.message,true);if(!silent)say(e.message,true);return false;});
+  var run=function(){
+    var sent=RVS.seq;
+    return ap('/api/review/settings',rvPayload()).then(function(r){
+      if(r&&r.rev!==undefined)RV.rev=r.rev;
+      if(RVS.seq===sent)RVS.dirty=false;
+      rvStamp('Сохранено '+new Date().toLocaleTimeString('ru-RU'));
+      if(!silent)say('Шаблоны сохранены.');return true;
+    }).catch(function(e){rvStamp('НЕ сохранено: '+e.message,true);say('Правила НЕ сохранены: '+e.message,true);return false;});
+  };
+  RVS.chain=RVS.chain.then(run,run);   /* сохранения идут по очереди, чтобы номер версии не расходился */
+  return RVS.chain;
 }
 window.addEventListener('pagehide',function(){
   if(!RVS.dirty)return;
@@ -1116,7 +1126,10 @@ function rvLog(rows){
   Array.prototype.forEach.call(t.querySelectorAll('tbody tr'),function(tr,i){var r=rows[i];if(r&&r.order)tr.children[1].appendChild(ordLink(r.order));});
   box.appendChild(t);
 }
-$('rv-reload').addEventListener('click',rvLoad);
+$('rv-reload').addEventListener('click',function(){
+  if(RVS.dirty){if(!confirm('Есть несохранённые правки. Загрузить версию с сервера и отбросить их?'))return;RVS.dirty=false;}
+  rvLoad();});
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&view==='review'&&!RVS.dirty)rvLoad();});
 $('rv-readall').addEventListener('click',rvReadAll);
 $('rv-scan').addEventListener('click',rvScan);
 $('rv-save').addEventListener('click',function(){rvSave(false);});

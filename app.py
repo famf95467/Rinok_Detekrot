@@ -1977,9 +1977,9 @@ ROUTES_CHAT = {'GET': {}, 'POST': {'/api/chat/list': need_login(h_chat_list), '/
 # Напоминания: «Найти заказы» (один запрос страницы, ничего не отправляется) -> список с галочками -> «Отправить
 # выбранным» (после подтверждения; по одному покупателю, с паузами). Берутся заказы «Оплачен» старше 24 часов.
 # Одному покупателю уходит ОДНО сообщение за раз (несколько заказов перечисляются в одном тексте). Не пишем, если
-# напоминали меньше 24 часов назад; на заказ не больше 3 напоминаний; за раз не больше 30 покупателей.
+# напоминали меньше 24 часов назад; на заказ не больше MAX_PER_ORDER напоминаний (сейчас 1); за раз не больше 30 покупателей.
 # Журнал reminders_log.json: только ID покупателя, номера заказов и время, текст не хранится.
-MIN_AGE_H, GAP_H, MAX_PER_ORDER, MAX_PER_RUN, MAX_REMIND_TEXT = 24, 24, 3, 30, 1000
+MIN_AGE_H, GAP_H, MAX_PER_ORDER, MAX_PER_RUN, MAX_REMIND_TEXT = 24, 24, 1, 30, 1000   # MAX_PER_ORDER: 1 = одно напоминание на заказ
 REMIND = {'groups': {}}              # результат последнего «Найти заказы»: покупатель -> заказы (отправлять можно только из него)
 MONTHS = {'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
           'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12}
@@ -2178,7 +2178,7 @@ def remind_scan(max_run=None, pages=1):
         if hrs is not None and hrs < GAP_H:
             g['ok'], g['reason'] = False, f'напоминали {hrs:.0f} ч назад'
         elif not left_orders:
-            g['ok'], g['reason'] = False, f'уже {MAX_PER_ORDER} напоминания по заказу'
+            g['ok'], g['reason'] = False, f'по заказу уже отправлено максимум напоминаний ({MAX_PER_ORDER})'
         elif n_ok >= max_run:
             g['ok'], g['reason'] = False, f'лимит {max_run} за раз, повторите позже'
         g['note'] = ''
@@ -2216,12 +2216,35 @@ def remind_send_one(buyer, template):
         pass
     me = int(ACC['me']['uid'])
     node = f'users-{min(me, int(buyer))}-{max(me, int(buyer))}'
-    res = chat_send(node, text)
-    if not res['error_site']:
-        log['buyers'][buyer] = datetime.datetime.now().isoformat(timespec='seconds')
+    # Журнал пишется ДО отправки: если связь оборвалась уже после того, как сообщение дошло, повтор не уйдёт.
+    prev_buyer = log['buyers'].get(buyer)
+    log['buyers'][buyer] = datetime.datetime.now().isoformat(timespec='seconds')
+    for o in g['orders']:
+        log['orders'][o] = int(log['orders'].get(o, 0)) + 1
+    write_json_atomic(REMIND_LOG, log)
+
+    def undo(restore_buyer):
+        lg = remind_log_read()
+        if restore_buyer:
+            if prev_buyer:
+                lg['buyers'][buyer] = prev_buyer
+            else:
+                lg['buyers'].pop(buyer, None)
         for o in g['orders']:
-            log['orders'][o] = int(log['orders'].get(o, 0)) + 1
-        write_json_atomic(REMIND_LOG, log)
+            n = int(lg['orders'].get(o, 0)) - 1
+            if n > 0:
+                lg['orders'][o] = n
+            else:
+                lg['orders'].pop(o, None)
+        write_json_atomic(REMIND_LOG, lg)
+    try:
+        res = chat_send(node, text)
+    except Exception:
+        undo(False)         # исход неизвестен: покупателя 24 часа не трогаем (повтора сейчас не будет), счётчик заказа откатываем
+        raise
+    if res['error_site']:
+        undo(True)          # сайт явно не принял сообщение: полный откат
+    else:
         try:
             conf_on_reminded(g['orders'])        # раздел 8б: фиксируем время напоминания (строка добавлена этапом 1)
         except Exception:
@@ -3012,8 +3035,80 @@ def rv_matches(r):
     return out[:RV_MAX_MATCHES]
 
 
+RV_PREV = P('review_settings_prev.json')
+RV_HISTORY = P('review_history')
+
+
+def rv_rev(d):
+    try:
+        return int(d.get('rev') or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def rv_read_raw(strict=False):
+    """Настройки отзывов. Файл не читается (занят, битый): 3 попытки, затем копия review_settings_prev.json.
+    Нет ни файла, ни копии: пустые настройки. Файл есть, но ничего прочитать не удалось: при strict ошибка (не пустота)."""
+    err = None
+    for p in (REVIEW_CFG, RV_PREV):
+        for _ in range(3):
+            try:
+                with open(p, encoding='utf-8') as f:
+                    d = json.load(f)
+                if isinstance(d, dict) and ('lots' in d or 'default' in d):
+                    return d
+                err = ValueError('нет полей lots/default')
+            except FileNotFoundError:
+                break
+            except (OSError, ValueError) as e:
+                err = e
+            time.sleep(0.15)
+    if err is not None and strict:
+        raise UserError(f'Файл настроек отзывов сейчас не читается ({type(err).__name__}). Ничего не записано, чтобы не стереть правила. '
+                        'Повторите через минуту.')
+    return {}
+
+
+def rv_json_strict(path):
+    """Словарь из JSON. Файла нет: {}. Файл есть, но не читается: ошибка, а не пустой словарь."""
+    err = None
+    for _ in range(3):
+        try:
+            with open(path, encoding='utf-8') as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return d
+            err = ValueError('не словарь')
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as e:
+            err = e
+        time.sleep(0.15)
+    raise UserError(f'Файл {os.path.basename(path)} сейчас не читается ({type(err).__name__}). Ничего не записано, чтобы не стереть данные. '
+                    'Повторите через минуту.')
+
+
+def rv_snapshot(cur, new_rules):
+    """Страховка перед записью: предыдущая версия в review_settings_prev.json, а в review_history (последние 60) не чаще раза
+    в 10 минут или когда меняется число правил."""
+    if not (isinstance(cur, dict) and ('lots' in cur or 'default' in cur)):
+        return
+    try:
+        write_json_atomic(RV_PREV, cur)
+        os.makedirs(RV_HISTORY, exist_ok=True)
+        names = sorted(n for n in os.listdir(RV_HISTORY) if n.startswith('rev_') and n.endswith('.json'))
+        old_rules = len(cur.get('lots') or []) if isinstance(cur.get('lots'), list) else 0
+        recent = bool(names) and time.time() - os.path.getmtime(os.path.join(RV_HISTORY, names[-1])) < 600
+        if old_rules != new_rules or not recent:
+            write_json_atomic(os.path.join(RV_HISTORY, 'rev_%06d_%s.json' % (rv_rev(cur), datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))), cur)
+            for n in sorted(n for n in os.listdir(RV_HISTORY) if n.startswith('rev_') and n.endswith('.json'))[:-60]:
+                os.remove(os.path.join(RV_HISTORY, n))
+    except OSError:
+        traceback.print_exc()
+
+
 def rv_load():
-    d = read_json(REVIEW_CFG, {})
+    d = rv_read_raw()
     lots = []
     for r in d.get('lots', []) if isinstance(d.get('lots'), list) else []:
         if not (isinstance(r, dict) and isinstance(r.get('text'), str)):
@@ -3029,14 +3124,20 @@ def rv_load():
         delay = delay if 0 <= delay <= 168 else 0.0
     except (TypeError, ValueError):
         delay = 0.0
-    return {'default': text.strip().replace('{reward}', '{promise}')[:RV_MAX_TEXT], 'lots': lots, 'delay_hours': delay}
+    return {'default': text.strip().replace('{reward}', '{promise}')[:RV_MAX_TEXT], 'lots': lots, 'delay_hours': delay, 'rev': rv_rev(d)}
 
 
 def rv_save(b):
     """Сохраняет шаблоны целиком."""
     with CONF_LOCK:
+        cur = rv_read_raw(strict=True)
+        if 'rev' not in b or not isinstance(b.get('lots'), list):
+            raise UserError('Страница устарела или запрос неполный: ничего не сохранено. Обновите страницу (Ctrl+F5) и повторите.')
+        if rv_int(b.get('rev'), 0, 10 ** 9, 'Версия настроек') != rv_rev(cur):
+            raise UserError(f'Настройки уже изменены в другой вкладке или на другом устройстве (версия на сервере {rv_rev(cur)}, у вас {b.get("rev")}). '
+                            'Ваши правки НЕ записаны, чтобы не затереть чужие. Нажмите «Обновить список» (несохранённое пропадёт) и внесите правки заново.')
         default = rv_check_text(b.get('default'), 'Общий шаблон')
-        raw = b.get('lots') if isinstance(b.get('lots'), list) else []
+        raw = b['lots']
         if len(raw) > RV_MAX_RULES:
             raise UserError(f'Правил на лот не больше {RV_MAX_RULES}.')
         lots, seen, keys = [], {}, set()
@@ -3063,10 +3164,12 @@ def rv_save(b):
             raise UserError('Задержка после подтверждения: нужно число часов от 0 до 168.')
         if not 0 <= delay <= 168:
             raise UserError('Задержка после подтверждения: нужно число часов от 0 до 168.')
-        write_json_atomic(REVIEW_CFG, {'default': default, 'lots': lots, 'delay_hours': delay})   # лот match дублирует matches[0] для старых версий
+        rv_snapshot(cur, len(lots))
+        new_rev = rv_rev(cur) + 1
+        write_json_atomic(REVIEW_CFG, {'default': default, 'lots': lots, 'delay_hours': delay, 'rev': new_rev})   # лот match дублирует matches[0] для старых версий
         conf_log(None, 'review-settings', f'шаблоны сохранены: правил на лот {len(lots)}, задержка {delay:g} ч, '
                  f'наград включено в правилах {sum(1 for r in lots if r["reward"]["enabled"])}')
-    return {'ok': True}
+    return {'ok': True, 'rev': new_rev}
 
 
 # ---------- список промокодов (штучная награда) ----------
@@ -3094,7 +3197,8 @@ def rv_stock_set(b):
     with CONF_LOCK:
         if match.casefold() not in {r['key'].casefold() for r in rv_load()['lots']}:
             raise UserError('Правило ещё не сохранено: выберите в нём хотя бы один лот и подождите пару секунд, потом загружайте список.')
-        st = rv_stock_load()
+        raw_st = rv_json_strict(REVIEW_STOCK).get('lots')          # файл есть, но не читается: отказ, а не запись поверх пустого
+        st = {str(k): [str(x) for x in v if str(x).strip()] for k, v in (raw_st.items() if isinstance(raw_st, dict) else []) if isinstance(v, list)}
         key = match.casefold()
         if append:
             have = st.get(key, [])
@@ -6189,7 +6293,7 @@ def rv_follow_merge(old_title, new_title):
     if not old_t or not new_t:
         return 'Названия лотов неизвестны, правила наград и текстов не менялись.'
     with CONF_LOCK:
-        raw = read_json(REVIEW_CFG, {})
+        raw = rv_read_raw(strict=True)
         rules = raw.get('lots') if isinstance(raw.get('lots'), list) else []
 
         def owner(t):
@@ -6212,6 +6316,8 @@ def rv_follow_merge(old_title, new_title):
         frag = new_t[:40].strip()
         ms.append(frag)
         rules[io]['matches'], rules[io]['match'] = ms, ms[0]
+        rv_snapshot(dict(raw), len(rules))
+        raw['rev'] = rv_rev(raw) + 1
         write_json_atomic(REVIEW_CFG, raw)
         conf_log(None, 'review-settings', f'при слиянии лотов в правило {io + 1} добавлен фрагмент нового названия')
         return f'В правило {io + 1} добавлен фрагмент нового названия: «{frag}». Список промокодов и награда остались общими.'
