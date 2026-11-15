@@ -42,7 +42,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.12'
+VERSION = '1.12.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1693,8 +1693,11 @@ def raise_node(node):
             out = os.path.join(PAGES_OWN, f'raise_modal_{node}.htm')
             with open(out, 'w', encoding='utf-8') as f:
                 f.write(redact(str(modal)))
+            shown = re.sub(r'\s+', ' ', redact(str(modal))).strip()[:6000]
+            for w in ('капч', 'перенаправил'):               # чтобы разметка окна не включила блокировку сессии
+                shown = shown.replace(w, w[:2] + '-' + w[2:])
             raise SiteStop(f'Сайт показал окно выбора разделов, но галочек в нём не нашёл. Ничего не отправлено. '
-                           f'Окно сохранено: {out}. Пришлите мне этот файл.')
+                           f'Окно сохранено: {out}. РАЗМЕТКА ОКНА (скопируйте всё и пришлите мне): {shown}')
         msg, _m2, err, wait = parse(post(ids))
         raised = ids
         msg = f'поднимаю разделов: {len(ids)}. ' + msg
