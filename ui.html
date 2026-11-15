@@ -1367,6 +1367,7 @@ $('ms-reload').addEventListener('click',function(){msLoad(false);});$('ms-days')
 setInterval(function(){if(view==='sales')msLoad(false);},30000);
 
 /* ---------- вкладки ---------- */
+(function(){var m=document.querySelector('main');if(!m)return;Array.prototype.forEach.call(document.querySelectorAll('section[id^="v-"]'),function(x){if(x.parentNode!==m)m.appendChild(x);});})();
 var nav=$('nav');
 var NAMES={},GOF={};TABS.forEach(function(t){NAMES[t[0]]=t[1];});
 var GROUPS=[['Заказы',['confirm','remind','review','chat']],['Деньги',['stats','sales']],['Лоты',['acc','merge']],['Рынок',['marks','prices','data','hist']],['Система',['auto']]];
