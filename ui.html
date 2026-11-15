@@ -220,6 +220,14 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <div class="fh">Текст напоминания ({order} заменится на номера заказов)</div>
 <textarea id="ap-text" rows="3" class="full" maxlength="1000"></textarea>
 <div class="bar"><button type="button" id="ap-save">Сохранить настройки</button><button type="button" id="ap-run">Запустить цикл сейчас</button><button type="button" id="ap-resume" style="display:none">Снять паузу отправок</button></div></div>
+<h3>Telegram</h3>
+<div class="box"><div class="cnt" id="tg-state">Читаю состояние…</div>
+<div class="cnt" style="margin-top:4px">Токен бота и ваш chat_id задаются вне программы: переменные TG_BOT_TOKEN и TG_CHAT_ID (Railway) или файл tg_token.txt рядом с app.py (строка 1 токен, строка 2 chat_id). На экран и в журналы они не попадают. Команды принимаются только из личного чата с вашим chat_id.</div>
+<div class="bar" style="margin-top:8px"><label><input type="checkbox" id="tg-enabled"> Оповещения включены</label>
+<label><input type="checkbox" id="tg-commands"> Команды из чата: статус, пауза, старт</label></div>
+<div class="fh">Присылать оповещения о</div>
+<div class="bar" id="tg-events"></div>
+<div class="bar"><button type="button" id="tg-save">Сохранить</button><button type="button" id="tg-test">Отправить тест</button></div></div>
 <h3>Последний цикл</h3><div id="ap-steps"></div>
 <h3>Журнал автопилота</h3><div id="ap-log"></div>
 </section>
@@ -1287,7 +1295,7 @@ function show(v){
   TABS.forEach(function(t){$('v-'+t[0]).style.display=(t[0]===v)?'block':'none';$('tab-'+t[0]).className='tab'+(t[0]===v?' cur':'');});
   $('bar-snap').style.display=(v==='marks'||v==='prices')?'flex':'none';
   if(v==='prices')loadPrices();if(v==='data')loadData();if(v==='hist')loadHist();if(v==='acc')loadAcc();
-  if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='auto')apLoad(true);if(v==='merge')mgLoad();if(v==='stats')needLogin('st',function(){stReport();sv1All();});
+  if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='auto'){apLoad(true);tgLoad();}if(v==='merge')mgLoad();if(v==='stats')needLogin('st',function(){stReport();sv1All();});
   try{history.replaceState(null,'','#'+v);}catch(e){}
 }
 function refresh(){load($('snap').value).then(function(){if(view==='prices')loadPrices();});}
@@ -1335,6 +1343,30 @@ $('ap-save').addEventListener('click',function(){
 $('ap-run').addEventListener('click',function(){ap('/api/autopilot/run').then(function(){say('Цикл запущен, результат появится через минуту.');setTimeout(function(){apLoad(false);},5000);}).catch(function(e){say(e.message,true);});});
 $('ap-resume').addEventListener('click',function(){ap('/api/autopilot/resume').then(function(){return apLoad(false);}).catch(function(e){say(e.message,true);});});
 setInterval(function(){if(view==='auto')apLoad(false);else api('/api/autopilot/status').then(apBanner).catch(function(){});},30000);
+/* ---------- Telegram ---------- */
+var TGW={};
+function tgLoad(){
+  return api('/api/tg/status').then(function(d){
+    var c=d.cfg,box=$('tg-events');
+    $('tg-enabled').checked=c.enabled;$('tg-commands').checked=c.commands;
+    box.textContent='';TGW={};
+    d.events.forEach(function(e){var lb=el('label'),i=el('input');i.type='checkbox';i.checked=!!c.events[e.key];TGW[e.key]=i;lb.appendChild(i);lb.appendChild(el('span','',' '+e.label));box.appendChild(lb);});
+    var t='Токен: '+d.token+'; chat_id: '+d.chat+'. Отправлено: '+d.sent+(d.failed?', не доставлено: '+d.failed:'')+(d.queued?', в очереди: '+d.queued:'')+'.';
+    if(d.err)t+=' Последняя ошибка'+(d.err_at?' ('+d.err_at.replace('T',' ')+')':'')+': '+d.err+'.';
+    if(c.commands&&d.poll)t+=' Команды: '+d.poll+'.';
+    if(d.chat!=='нет'&&d.chat!=='неверный формат'&&!d.private)t+=' chat_id похож на группу или канал: оповещения идут, команды отключены.';
+    if(d.foreign)t+=' Сообщений от чужих чатов проигнорировано: '+d.foreign+'.';
+    var s=$('tg-state');s.textContent=t;s.style.color=(d.err||d.token!=='есть'||d.chat==='нет'||d.chat==='неверный формат')?'var(--x)':'';
+  }).catch(function(e){say(e.message,true);});
+}
+$('tg-save').addEventListener('click',function(){
+  var ev={};Object.keys(TGW).forEach(function(k){ev[k]=TGW[k].checked;});
+  ap('/api/tg/settings',{enabled:$('tg-enabled').checked,commands:$('tg-commands').checked,events:ev}).then(function(){say('Настройки Telegram сохранены.');return tgLoad();}).catch(function(e){say(e.message,true);});
+});
+$('tg-test').addEventListener('click',function(){
+  $('tg-test').disabled=true;
+  ap('/api/tg/test').then(function(){say('Тестовое сообщение отправлено, проверьте Telegram.');}).catch(function(e){say(e.message,true);}).then(function(){$('tg-test').disabled=false;return tgLoad();});
+});
 function autoLogin(){
   return api('/api/acc/status').then(function(s){
     AC.logged=s.logged;

@@ -18,6 +18,7 @@ README.md (карта проекта для людей и агентов: чит
    8в. Просьба об отзыве: шаблоны на лот, одна просьба на заказ (этап 2)
    9. Статистика                                            (бывш. stats_tab.py)
   9б. Статистика v1: награды, расходы, метрики по ID лота, подсказки, отчёт
+  8д. Telegram: оповещения и команды статус/пауза/старт (версия 1.15)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
 
@@ -42,7 +43,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.14'
+VERSION = '1.15'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -1461,11 +1462,17 @@ def guarded(fn):
             return 200, fn()
     except SiteStop as s:
         msg = str(s)
-        if 'ключ недействителен' in msg:
+        key_bad = 'ключ недействителен' in msg
+        if key_bad:
             ACC['key_bad'], ACC['key_bad_at'] = 'сайт перенаправил на страницу входа: golden_key перестал действовать.', time.time()
+            tg_notify('key', '🔑 golden_key перестал работать: сайт перенаправил на страницу входа. Автопилот остановлен до перезапуска. '
+                             'Замените ключ (переменная FUNPAY_GOLDEN_KEY или вкладка «Аккаунт») и перезапустите программу.')
         if any(w in msg for w in LOCK_WORDS):
             ACC['locked'] = True
             msg += ' Сессия заблокирована: ничего не повторяется и не обходится.'
+            if not key_bad:
+                tg_notify('lock', '⛔ Сайт заблокировал сессию аккаунта (блокировка, капча или перенаправление). Автопилот остановлен, '
+                                  'запросы отключены до перезапуска. Причина: ' + msg[:300], key=msg[:80])
         return 409, {'error': msg}
     except UserError as e:
         return 400, {'error': str(e)}
@@ -3715,6 +3722,7 @@ def ap_read():
 
 
 def ap_log(step, text, ok=True):
+    tg_from_log(step, text, ok)                    # оповещения в Telegram (раздел 8д); не блокирует и не падает
     try:
         new = not os.path.exists(AP_LOG)
         with open(AP_LOG, 'a', encoding='utf-8-sig', newline='') as f:
@@ -4225,6 +4233,361 @@ def ap_resume(_b):
 ROUTES_AUTOPILOT = {'GET': {'/api/autopilot/status': ap_status},
                     'POST': {'/api/autopilot/settings': ap_settings, '/api/autopilot/run': ap_run_now,
                              '/api/autopilot/resume': ap_resume}}
+
+
+# ===== 8д. Telegram: оповещения и команды (версия 1.15) ================================================
+# Оповещения: блокировка сессии сайтом, golden_key перестал работать, пауза автоотправки, ошибка цикла автопилота,
+# автовозврат, защита входа (блокировка IP, вход с нового IP), запуск программы (после перезапуска или возврата сервиса).
+# Команды из чата: статус, пауза, старт (работают только из ЛИЧНОГО чата с вашим chat_id; остальные сообщения молча игнорируются).
+# Токен бота и chat_id: переменные TG_BOT_TOKEN и TG_CHAT_ID (Railway) или файл tg_token.txt рядом с программой
+# (строка 1: токен, строка 2: chat_id). СЕКРЕТЫ: в настройки, журналы, ответы API и резервные копии не попадают.
+# Сбой Telegram работу программы не останавливает: сообщение повторяется 3 раза и отбрасывается, причина видна на вкладке «Автопилот».
+# Ничего не обходится: если Telegram недоступен или токен отклонён, программа об этом только сообщает.
+TG_CFG = P('tg_settings.json')
+TG_STATE = P('tg_state.json')            # только время последнего оповещения о запуске (защита от потока при перезапусках)
+TG_TOKEN_FILE = P('tg_token.txt')        # СЕКРЕТ (.txt в копии не входит)
+TG_BASE = os.environ.get('MARKET_TEST_TG_BASE', 'https://api.telegram.org')   # MARKET_TEST_*: только для проверки на локальном сервере
+TG_EVENTS = (('lock', 'Сайт заблокировал сессию (блокировка, капча)'),
+             ('key', 'golden_key перестал работать'),
+             ('pause', 'Пауза автоотправки'),
+             ('resume', 'Пауза снята'),
+             ('loop', 'Ошибка цикла автопилота'),
+             ('refund', 'Автовозврат выполнен'),
+             ('security', 'Защита входа: блокировка IP, вход с нового IP'),
+             ('start', 'Программа запущена (после перезапуска)'))
+TG_COOLDOWN = {'loop': 3600, 'key': 6 * 3600, 'security': 600}   # секунд между одинаковыми оповещениями
+TG_RETRY = (10, 30, 60)                  # повторы отправки при сбое связи, секунд
+TG_START_GAP = 180                       # оповещение о запуске не чаще раза в 3 минуты (если сервис перезапускается по кругу)
+TG = {'q': collections.deque(maxlen=50), 'last': {}, 'sent': 0, 'failed': 0, 'err': '', 'err_at': '', 'poll': '',
+      'offset': None, 'foreign': 0, 'started': False}
+TG_LOCK = threading.Lock()
+
+
+class TgError(Exception):
+    def __init__(self, msg, code=0):
+        super().__init__(msg)
+        self.code = code
+
+
+def tg_read():
+    raw, cfg = read_json(TG_CFG, {}), {'enabled': True, 'commands': True, 'events': {k: True for k, _l in TG_EVENTS}}
+    for k in ('enabled', 'commands'):
+        if isinstance(raw.get(k), bool):
+            cfg[k] = raw[k]
+    ev = raw.get('events')
+    if isinstance(ev, dict):
+        for k, _l in TG_EVENTS:
+            if isinstance(ev.get(k), bool):
+                cfg['events'][k] = ev[k]
+    return cfg
+
+
+def tg_creds_raw():
+    tok, chat = os.environ.get('TG_BOT_TOKEN', '').strip(), os.environ.get('TG_CHAT_ID', '').strip()
+    if not (tok and chat):
+        try:
+            with open(TG_TOKEN_FILE, encoding='utf-8-sig') as f:
+                lines = [x.strip() for x in f.read().splitlines() if x.strip()]
+            tok = tok or (lines[0] if lines else '')
+            chat = chat or (lines[1] if len(lines) > 1 else '')
+        except OSError:
+            pass
+    return tok, chat
+
+
+def tg_creds():
+    """(токен, chat_id) или пустые строки, если не заданы или формат неверный."""
+    tok, chat = tg_creds_raw()
+    return (tok if re.fullmatch(r'\d{5,15}:[A-Za-z0-9_-]{25,80}', tok) else ''), (chat if re.fullmatch(r'-?\d{1,20}', chat) else '')
+
+
+def tg_call(method, params, timeout=30):
+    tok, _chat = tg_creds()
+    if not tok:
+        raise TgError('токен не задан или неверного формата')
+    req = urllib.request.Request(f'{TG_BASE}/bot{tok}/{method}', data=urllib.parse.urlencode(params).encode('utf-8'),
+                                 headers={'User-Agent': 'FunPayDetector-Telegram'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            j = json.loads(r.read(2 * 1024 * 1024).decode('utf-8', 'replace'))
+    except urllib.error.HTTPError as e:
+        try:
+            desc = str(json.loads(e.read(5000).decode('utf-8', 'replace')).get('description', ''))[:200]
+        except (ValueError, OSError):
+            desc = ''
+        raise TgError(f'Telegram ответил HTTP {e.code}' + (f': {desc}' if desc else ''), e.code)
+    except (urllib.error.URLError, OSError, ValueError) as e:      # текст ошибки не берём: в нём мог бы оказаться адрес с токеном
+        raise TgError(f'нет связи с Telegram ({type(e).__name__})')
+    if not isinstance(j, dict) or not j.get('ok'):
+        raise TgError('Telegram не принял запрос: ' + str((j or {}).get('description', ''))[:200] if isinstance(j, dict) else 'ответ не распознан')
+    return j.get('result')
+
+
+def tg_notify(kind, text, key=None):
+    """Поставить оповещение в очередь. Никогда не блокирует и не бросает исключений: сбой Telegram не должен ронять автопилот."""
+    try:
+        cfg = tg_read()
+        if not cfg['enabled'] or not cfg['events'].get(kind):
+            return
+        tok, chat = tg_creds()
+        if not (tok and chat):
+            return
+        now, k = time.time(), (kind, key or kind)
+        with TG_LOCK:
+            cd = TG_COOLDOWN.get(kind, 0)
+            if cd and now - TG['last'].get(k, 0) < cd:
+                return
+            TG['last'][k] = now
+            if len(TG['last']) > 500:
+                TG['last'].clear()
+            TG['q'].append(('{} FunPay Detector {}\n{}'.format('☁️' if CLOUD else '🖥', VERSION, str(text)[:3500])))
+    except Exception:
+        pass
+
+
+def tg_reply(text):
+    with TG_LOCK:
+        TG['q'].append(str(text)[:3500])
+
+
+def tg_deliver(chat, text):
+    for i in range(len(TG_RETRY) + 1):
+        try:
+            tg_call('sendMessage', {'chat_id': chat, 'text': text, 'disable_web_page_preview': 'true'}, 25)
+            TG['sent'] += 1
+            TG['err'] = ''
+            return True
+        except TgError as e:
+            TG['err'], TG['err_at'] = str(e), datetime.datetime.now().isoformat(timespec='seconds')
+            if e.code in (400, 401, 403, 404) or i >= len(TG_RETRY):    # токен/чат неверны или бот заблокирован: повторять бесполезно
+                TG['failed'] += 1
+                return False
+            time.sleep(TG_RETRY[i])
+    return False
+
+
+def tg_send_loop():
+    while True:
+        try:
+            with TG_LOCK:
+                text = TG['q'].popleft() if TG['q'] else None
+            if text is None:
+                time.sleep(2)
+                continue
+            _tok, chat = tg_creds()
+            if chat:
+                tg_deliver(chat, text)
+        except Exception:
+            traceback.print_exc()
+            time.sleep(5)
+
+
+def tg_from_log(step, text, ok):
+    """Вызывается из ap_log: журнал автопилота уже содержит все нужные события, отдельных вызовов по коду не нужно."""
+    try:
+        if step == 'пауза отправок':
+            if not ok:
+                tg_notify('pause', '⏸ Автоотправка остановлена: ' + text)
+            elif 'снята' in text:
+                tg_notify('resume', '▶️ Пауза отправок ' + text)
+        elif step == 'цикл' and not ok:
+            tg_notify('loop', '⚠️ Ошибка цикла автопилота: ' + text, key='loop')
+        elif step == 'возврат' and ok and text.startswith('отправлено'):
+            tg_notify('refund', '💸 Автовозврат выполнен, заказ ' + text.split(':', 1)[-1].strip(), key=text)
+    except Exception:
+        pass
+
+
+# ---- команды ----
+def tg_cmd_status():
+    cfg = ap_read()
+    L = ['Автопилот: ' + ('включён' if cfg['enabled'] else 'ВЫКЛЮЧЕН') + (', идёт цикл' if AP['running'] else '')]
+    if AP['ended']:
+        L.append('Последний цикл: ' + AP['ended'].replace('T', ' '))
+    if AP['next'] and cfg['enabled']:
+        L.append('Следующий: ' + AP['next'].replace('T', ' '))
+    L.append('Вход в аккаунт: ' + ('выполнен' if ACC['key'] else 'нет'))
+    if ACC['locked']:
+        L.append('⛔ Сессия заблокирована сайтом (до перезапуска программы).')
+    if ACC.get('key_bad'):
+        L.append('🔑 golden_key не работает: ' + ACC['key_bad'])
+    L.append(('⏸ Отправки на паузе: ' + AP['paused']) if AP['paused'] else 'Пауза отправок: нет')
+    r = AP.get('ready') or {}
+    if r:
+        L.append('Готово к отправке: напоминаний {}, просьб об отзыве {}, наград {}, возвратов {}'.format(
+            r.get('remind', 0), r.get('review_request', 0), r.get('reward', 0), r.get('refund', 0)))
+    if AP['sent']:
+        L.append('Отправлено с запуска: ' + ', '.join(f'{k} {v}' for k, v in AP['sent'].items()))
+    bad = [x for x in ap_log_tail(15) if not x['ok']][:2]
+    for x in bad:
+        L.append(f"(!) {x['time'].replace('T', ' ')} {x['step']}: {x['text'][:120]}")
+    try:
+        pr = protection()
+        if pr['stopped']:
+            L.append('Гостевой загрузчик остановлен: ' + (pr['reason'] or pr['result']))
+    except Exception:
+        pass
+    return '\n'.join(L)
+
+
+def tg_cmd_pause():
+    cfg = ap_read()
+    cfg['enabled'] = False
+    write_json_atomic(AP_CFG, cfg)
+    AP['paused'], AP['paused_until'], AP['next'], AP['force'] = 'остановлено командой из Telegram.', None, '', False
+    ap_log('Telegram', 'автопилот остановлен командой «пауза»')
+    return ('⏸ Автопилот выключен, отправки остановлены. Сообщение, которое уже уходит в этот момент, дойдёт; новые не начнутся.\n'
+            'Вернуть: «старт» (или вкладка «Автопилот»).')
+
+
+def tg_cmd_start():
+    if ACC['locked']:
+        return '⛔ Сессия заблокирована сайтом, команда не поможет. Нужен перезапуск программы; решение за вами.'
+    cfg, done, left = ap_read(), [], ''
+    if not cfg['enabled']:
+        cfg['enabled'] = True
+        write_json_atomic(AP_CFG, cfg)
+        done.append('автопилот включён')
+    if AP['paused']:
+        if AP['paused'].startswith('возврат:'):
+            left = ('Пауза из-за ошибки при возврате денег ОСТАЛАСЬ: проверьте заказ на сайте и снимите её кнопкой '
+                    'на вкладке «Автопилот». Причина: ' + AP['paused'])
+        else:
+            AP['paused'], AP['paused_until'], AP['pause_n'] = '', None, 0
+            done.append('пауза отправок снята (если причина не устранена, сайт остановит отправки снова)')
+    if done and not AP['running']:
+        AP['force'] = True
+        done.append('цикл запущен сейчас')
+    if done:
+        ap_log('Telegram', 'команда «старт»: ' + ', '.join(done))
+    return '▶️ ' + ('; '.join(done) if done else 'Менять нечего: автопилот уже включён и пауз нет.') + ('\n' + left if left else '')
+
+
+TG_HELP = 'Команды: статус (/status), пауза (/pause), старт (/start). Больше ничего бот не делает.'
+TG_COMMANDS = {'status': tg_cmd_status, 'статус': tg_cmd_status, 'pause': tg_cmd_pause, 'пауза': tg_cmd_pause,
+               'start': tg_cmd_start, 'старт': tg_cmd_start, 'help': lambda: TG_HELP, 'помощь': lambda: TG_HELP}
+
+
+def tg_handle_update(u, chat):
+    m = u.get('message') or {}
+    c = m.get('chat') or {}
+    if str(c.get('id')) != chat or c.get('type') != 'private' or (m.get('from') or {}).get('is_bot'):
+        TG['foreign'] += 1                   # чужим не отвечаем, чтобы бота нельзя было «нащупать»
+        return
+    if time.time() - int(m.get('date') or 0) > 300:
+        return                               # старая команда (бот был выключен): не выполняем
+    text = (m.get('text') or '').strip()
+    if not text:
+        return
+    word = text.split()[0].lower().lstrip('/').split('@')[0]
+    fn = TG_COMMANDS.get(word)
+    try:
+        tg_reply(fn() if fn else TG_HELP)
+    except Exception as e:
+        traceback.print_exc()
+        tg_reply(f'Команда не выполнена: {type(e).__name__}: {e}')
+
+
+def tg_poll_loop():
+    time.sleep(10)
+    menu_set = False
+    while True:
+        try:
+            cfg, (tok, chat) = tg_read(), tg_creds()
+            if not (cfg['enabled'] and cfg['commands'] and tok and chat):
+                TG['poll'] = ''
+                time.sleep(30)
+                continue
+            if chat.startswith('-'):
+                TG['poll'] = 'команды отключены: chat_id группы или канала, нужен личный чат (положительное число)'
+                time.sleep(60)
+                continue
+            if not menu_set:
+                menu_set = True
+                try:
+                    tg_call('setMyCommands', {'commands': json.dumps([{'command': 'status', 'description': 'Состояние автопилота'},
+                                                                      {'command': 'pause', 'description': 'Остановить автопилот'},
+                                                                      {'command': 'start', 'description': 'Запустить автопилот'}])}, 20)
+                except TgError:
+                    pass
+            if TG['offset'] is None:             # накопившиеся за время простоя сообщения пропускаем, чтобы старая команда не сработала
+                res = tg_call('getUpdates', {'offset': -1, 'timeout': 0}, 20)
+                TG['offset'] = (res[-1]['update_id'] + 1) if res else 0
+            res = tg_call('getUpdates', {'offset': TG['offset'], 'timeout': 25, 'allowed_updates': json.dumps(['message'])}, 45)
+            TG['poll'] = 'работает'
+            for u in res or []:
+                TG['offset'] = u['update_id'] + 1
+                tg_handle_update(u, chat)
+        except TgError as e:
+            TG['poll'] = f'ошибка: {e}' + (' (одновременно запущена другая копия с этим же ботом: используйте для облака и ПК разных ботов или отключите команды в одной из копий)' if e.code == 409 else '')
+            time.sleep(300 if e.code in (401, 404) else 60)
+        except Exception:
+            traceback.print_exc()
+            time.sleep(30)
+
+
+def tg_start():
+    """Запуск потоков и оповещение «программа запущена» (не чаще раза в TG_START_GAP секунд)."""
+    if TG['started']:
+        return
+    TG['started'] = True
+    threading.Thread(target=tg_send_loop, daemon=True).start()
+    threading.Thread(target=tg_poll_loop, daemon=True).start()
+    st = read_json(TG_STATE, {})
+    if time.time() - float(st.get('start_at') or 0) >= TG_START_GAP:
+        try:
+            write_json_atomic(TG_STATE, {'start_at': time.time()})
+        except OSError:
+            pass
+        tg_notify('start', '🟢 Программа запущена. Автопилот: ' + ('включён' if ap_read()['enabled'] else 'выключен')
+                  + '. Если до этого был простой, проверьте статус командой «статус».')
+
+
+def h_tg_status(_q=None):
+    cfg, (rt, rc), (tok, chat) = tg_read(), tg_creds_raw(), tg_creds()
+    return 200, {'cfg': cfg, 'events': [{'key': k, 'label': l} for k, l in TG_EVENTS],
+                 'token': 'нет' if not rt else ('есть' if tok else 'неверный формат'),
+                 'chat': 'нет' if not rc else (('…' + chat[-4:]) if chat else 'неверный формат'),
+                 'private': bool(chat) and not chat.startswith('-'),
+                 'sent': TG['sent'], 'failed': TG['failed'], 'err': TG['err'], 'err_at': TG['err_at'],
+                 'poll': TG['poll'], 'foreign': TG['foreign'], 'queued': len(TG['q'])}
+
+
+def h_tg_settings(b):
+    cfg = tg_read()
+    for k in ('enabled', 'commands'):
+        if k in b:
+            if not isinstance(b[k], bool):
+                return 400, {'error': f'Поле {k}: нужно да/нет.'}
+            cfg[k] = b[k]
+    if 'events' in b:
+        if not isinstance(b['events'], dict):
+            return 400, {'error': 'Поле events: нужен набор да/нет.'}
+        for k, _l in TG_EVENTS:
+            if k in b['events']:
+                if not isinstance(b['events'][k], bool):
+                    return 400, {'error': f'Событие {k}: нужно да/нет.'}
+                cfg['events'][k] = b['events'][k]
+    write_json_atomic(TG_CFG, cfg)
+    ap_log('настройки', 'Telegram: изменены')
+    return 200, {'ok': True}
+
+
+def h_tg_test(_b):
+    tok, chat = tg_creds()
+    if not (tok and chat):
+        return 400, {'error': 'Токен или chat_id не заданы либо неверного формата (TG_BOT_TOKEN и TG_CHAT_ID, или файл tg_token.txt).'}
+    try:
+        tg_call('sendMessage', {'chat_id': chat, 'text': f'Тест связи: FunPay Detector {VERSION}, {"облако" if CLOUD else "ПК"}.'}, 20)
+    except TgError as e:
+        TG['err'], TG['err_at'] = str(e), datetime.datetime.now().isoformat(timespec='seconds')
+        return 409, {'error': 'Telegram не принял сообщение: ' + str(e)}
+    TG['sent'] += 1
+    TG['err'] = ''
+    return 200, {'ok': True}
+
+
+ROUTES_TG = {'GET': {'/api/tg/status': h_tg_status}, 'POST': {'/api/tg/settings': h_tg_settings, '/api/tg/test': h_tg_test}}
 
 
 # ===== 9. Статистика ===================================================================================
@@ -5539,6 +5902,10 @@ def sec_trim():
 def sec_log(ip, event, ua='', note=''):
     now = datetime.datetime.now().replace(microsecond=0)
     SEC_EVENTS.append((now.isoformat(), ip, event, note))
+    if event == 'блокировка IP':
+        tg_notify('security', f'🛡 Защита входа: IP {ip} заблокирован ({note}) после неверных паролей.', key=event + ip)
+    elif event == 'вход с нового IP':
+        tg_notify('security', f'🔔 Вход с нового IP {ip}. Если это не вы, смените APP_PASSWORD и golden_key.', key=event + ip)
     try:
         new = not os.path.exists(SEC_LOG)
         if not new and os.path.getsize(SEC_LOG) > 400000:
@@ -5672,7 +6039,7 @@ def h_security_ack(_b=None):
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
 # в своём разделе; здесь они склеиваются. Обработчик: функция(body_или_query: dict) -> (HTTP-код, dict).
 ROUTES = {'GET': {}, 'POST': {}}
-for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_STATS, ROUTES_STATV1):
+for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_STATS, ROUTES_STATV1):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
 ROUTES['GET']['/api/backups'] = h_backups_list
@@ -5939,6 +6306,9 @@ def cmd_serve():
     if CLOUD:
         sec_load_events()
         print(f'Защита входа: {SEC_DISTINCT} разных неверных паролей с одного IP за {SEC_WINDOW // 60} мин блокируют IP, журнал: {SEC_LOG}')
+    tg_start()
+    _tok, _chat = tg_creds()
+    print('Telegram: ' + ('оповещения включены' if (_tok and _chat and tg_read()['enabled']) else 'не настроен (TG_BOT_TOKEN и TG_CHAT_ID или tg_token.txt)') + '.')
     print('Автопилот: ' + ('включён' if ap_read()['enabled'] else 'выключен') + ', первый цикл через 45 с. Отправки сообщений включаются отдельно на вкладке «Автопилот».')
     try:
         srv.serve_forever()
