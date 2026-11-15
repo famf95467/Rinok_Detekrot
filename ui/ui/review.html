@@ -1,0 +1,17 @@
+<section id="v-review" style="display:none">
+<div class="box"><div class="cnt">Просьба об отзыве после подтверждения заказа. Список и готовые тексты строятся локально, без запросов к сайту. «Отправить» шлёт одно сообщение по одному заказу после вашего подтверждения; автоотправки нет. Один заказ получает одну просьбу, одному покупателю не чаще раза в 24 часа. Для отправки нужен вход на вкладке «Аккаунт».</div>
+<div class="bar" style="margin-top:8px"><button type="button" id="rv-reload">Обновить список</button>
+<button type="button" id="rv-all">Отправить все готовые</button><button type="button" id="rv-scan">Найти подтверждённые заказы</button><button type="button" id="rv-readall">Прочитать оценки</button><button type="button" id="rv-rwall">Выдать награду всем готовым</button><span class="cnt" id="rv-sum"></span></div></div>
+<div class="box"><h3>Шаблоны и награды</h3>
+<div class="cnt">Всё, что вы здесь меняете, сохраняется само (в папке проекта) и остаётся после закрытия программы. Подстановки в тексте просьбы: {order} номер заказа, {lot} название лота, {price} сумма, {link} страница заказа, {promise} строка про награду («Если оставите отзыв на 5 из 5, подарю…»). Строка только обещает: саму награду выдаёт кнопка «Выдать награду» после того, как оценка отзыва прочитана и совпала.</div>
+<div class="fh" style="margin-top:8px">1. Общий шаблон просьбы (для всех лотов без своего правила)</div>
+<textarea id="rv-def" rows="4" class="full" maxlength="1000"></textarea>
+<div class="bar"><label>Задержка после подтверждения, часов: <input type="number" id="rv-delay" min="0" max="168" step="0.5" style="width:80px"></label><span class="cnt" id="rv-savest"></span></div>
+<div class="fh">2. Правила: свой текст и награда для выбранных лотов. Одно правило может включать несколько лотов, список промокодов у них общий.</div>
+<div id="rv-rules"></div>
+<div class="bar"><button type="button" id="rv-addrule">Добавить правило</button><button type="button" id="rv-save">Сохранить сейчас</button></div>
+<div class="state bad" style="font-weight:400"><div class="cnt" style="color:inherit">Награда выдаётся не сразу, а только после отзыва нужной оценки (по умолчанию 5), и только кнопкой «Выдать награду» после вашего подтверждения. Оценка читается со страницы заказа (кнопки «Прочитать оценку»), её можно внести и вручную. Правила FunPay насчёт награды за отзыв (в том числе за конкретную оценку) проверяете вы сами.</div></div></div>
+<div class="box"><h3>Как узнать оценку отзыва</h3><div class="cnt">Оценка читается автоматически кнопками «Прочитать оценку» и «Прочитать оценки». Эта кнопка нужна только для диагностики: если оценку прочитать не удалось, она откроет одну страницу заказа и сохранит блок отзыва (без чата) в папку pages_own. Нужен вход на вкладке «Аккаунт».</div>
+<div class="bar" style="margin-top:8px"><input type="text" id="rv-insid" placeholder="Номер заказа, например N7FL7WEW" style="width:240px"><button type="button" id="rv-ins">Показать структуру отзыва</button></div><pre class="log" id="rv-insout" style="display:none"></pre></div>
+<div id="rv-tbl"></div>
+<h3>Журнал просьб об отзыве</h3><div id="rv-log"></div></section>

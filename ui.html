@@ -262,7 +262,6 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <h3>Последний цикл</h3><div id="ap-steps"></div>
 <h3>Журнал автопилота</h3><div id="ap-log"></div>
 </section>
-</main>
 <section id="v-confirm" style="display:none">
 <div class="box"><div class="cnt">Учёт заказов, которые покупатель забыл подтвердить. Здесь только учёт и подготовка текста тикета: ничего не отправляется ни покупателю, ни в поддержку. Тикет вы отправляете вручную. Тикет готовится только для заказов с напоминанием, прошедшим таймером и вашей отметкой «чат проверен».</div>
 <div class="bar" style="margin-top:8px"><label><input type="checkbox" id="cf-all"> Показывать закрытые</label>
@@ -1460,4 +1459,4 @@ function autoLogin(){
 api('/api/autopilot/status').then(apBanner).catch(function(){});
 load('').then(autoLogin).then(function(){var h=(location.hash||'').replace('#','');var ok=TABS.some(function(t){return t[0]===h;});show(ok?h:'marks');});
 })();
-</script></body></html>
+</script></main></div></body></html>
