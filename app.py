@@ -19,6 +19,7 @@ README.md (карта проекта для людей и агентов: чит
    9. Статистика                                            (бывш. stats_tab.py)
   9б. Статистика v1: награды, расходы, метрики по ID лота, подсказки, отчёт
   8д. Telegram: оповещения, кнопки, команды, ежедневная сводка (версия 1.16)
+  8е. Продажи конкурентов по остатку: опрос категории раз в минуту (версия 1.16.1)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
 
@@ -43,7 +44,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.16'
+VERSION = '1.16.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -4850,6 +4851,318 @@ def h_tg_test(_b):
 ROUTES_TG = {'GET': {'/api/tg/status': h_tg_status}, 'POST': {'/api/tg/settings': h_tg_settings, '/api/tg/test': h_tg_test}}
 
 
+# ===== 8е. Продажи конкурентов по остатку (версия 1.16.1) ==============================================================
+# Раз в N минут (по умолчанию 1) гостевой запрос страницы категории, как у загрузчика (раздел 3): из каждой строки лота берётся
+# остаток (колонка «Наличие», .tc-amount) и сравнивается с остатком того же лота в прошлом проходе (память, на диск не пишется).
+# Правила счёта (решение пользователя):
+#   остаток вырос                          -> пополнение, не считается;
+#   остаток упал на 1..MAX_SALE (10)       -> продано столько штук (ОЦЕНКА: продавец мог убрать товар сам);
+#   остаток упал больше, чем на MAX_SALE   -> продавец сменил количество, не считается;
+#   остаток не изменился / лот новый / между проходами прошло больше MS_GAP_MULT интервалов -> не считается.
+# Продажи по чужим лотам: оценка, не факт (пополнение и продажа в одну минуту сливаются, число занижено). Запись только событий
+# (market_sales.csv), без покупателей. Блокировка, капча, редирект, HTTP 401/403/429/5xx: опрос останавливается до конца дня
+# (общий fetch_state.json, как у загрузчика), повторов и обхода нет. Параллельно с загрузчиком не ходит.
+MS_SET = P('market_sales_settings.json')
+MS_EVENTS = P('market_sales.csv')
+MS_STATE = P('market_sales_state.json')      # счётчики проходов по дням (для оценки полноты наблюдения)
+MS_COLS = ['время', 'категория', 'id', 'продавец', 'название', 'цена_руб', 'было', 'стало', 'продано']
+MS_DEFAULT = {'enabled': False, 'interval_min': 1, 'node': 1112, 'max_sale': 10}
+MS_GAP_MULT = 2.5                            # дольше этого числа интервалов между двумя проходами лота сравнивать нельзя
+MS_FIRST_DELAY = float(os.environ.get('MARKET_TEST_MS_DELAY', '30'))
+MS_FORCE_SEC = os.environ.get('MARKET_TEST_MS_SEC')       # только для проверки: интервал в секундах вместо минут
+MS_NO_AMOUNT_STOP = 2                        # столько проходов подряд без единого остатка: опрос выключается сам
+MS_LOCK = threading.Lock()
+MS = {'base': {}, 'lots': 0, 'with_amount': 0, 'passes': 0, 'last': '', 'last_stats': {}, 'err': '', 'err_at': '',
+      'stopped': '', 'no_amount': 0, 'note': '', 'cat': 0}
+
+
+def ms_read():
+    raw, cfg = read_json(MS_SET, {}), dict(MS_DEFAULT)
+    if isinstance(raw.get('enabled'), bool):
+        cfg['enabled'] = raw['enabled']
+    for k, lo, hi in (('interval_min', 1, 60), ('node', 1, 99999999), ('max_sale', 1, 1000)):
+        v = raw.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
+            cfg[k] = v
+    return cfg
+
+
+def ms_parse(text):
+    """Лоты со страницы категории с остатком: id, seller, title, price, amount (int или None), auto, reviews. Первое вхождение id."""
+    soup = BeautifulSoup(text, 'html.parser')
+    out, seen = [], set()
+    for a in soup.select('a.tc-item'):
+        lid = (a.get('href') or '').split('id=')[-1]
+        if not lid or lid in seen:
+            continue
+        seen.add(lid)
+        am = a.select_one('.tc-amount')
+        raw = am.get_text(' ', strip=True) if am else ''
+        amount = int(re.sub(r'\s', '', raw)) if re.fullmatch(r'\d[\d\s\u00a0\u202f]*', raw) else None   # «10 000+», «более 100»: не число, пропуск
+        price, seller, title = a.select_one('.tc-price'), a.select_one('.media-user-name'), a.select_one('.tc-desc-text')
+        try:
+            pv = round(float(price['data-s']), 2) if price is not None and price.get('data-s') else None
+        except ValueError:
+            pv = None
+        out.append({'id': lid, 'seller': seller.get_text(strip=True) if seller else '',
+                    'title': title.get_text(' ', strip=True) if title else '', 'price': pv,
+                    'amount': amount, 'cur': (a.select_one('.tc-price .unit').get_text(strip=True) if a.select_one('.tc-price .unit') else '')})
+    return out
+
+
+def ms_count(base, rows, now_ts, interval_s, max_sale):
+    """Сравнивает остатки с прошлым проходом. base: id -> (остаток, время); меняется на месте. Возвращает (события, счётчики)."""
+    max_gap = MS_GAP_MULT * interval_s
+    st = {'sale': 0, 'restock': 0, 'bulk': 0, 'same': 0, 'new': 0, 'stale': 0, 'noamount': 0}
+    ev = []
+    for r in rows:
+        a = r['amount']
+        if a is None:
+            st['noamount'] += 1
+            base.pop(r['id'], None)               # остаток пропал: следующий проход начнёт заново, без догадок
+            continue
+        old = base.get(r['id'])
+        base[r['id']] = (a, now_ts)
+        if old is None:
+            st['new'] += 1
+            continue
+        if now_ts - old[1] > max_gap:
+            st['stale'] += 1
+            continue
+        d = old[0] - a
+        if d == 0:
+            st['same'] += 1
+        elif d < 0:
+            st['restock'] += 1
+        elif d > max_sale:
+            st['bulk'] += 1
+        else:
+            st['sale'] += 1
+            ev.append({'id': r['id'], 'seller': r['seller'], 'title': r['title'], 'price': r['price'], 'was': old[0], 'now': a, 'sold': d})
+    for k in [k for k, v in base.items() if now_ts - v[1] > 3600]:    # давно не виденные лоты не копим
+        del base[k]
+    return ev, st
+
+
+def ms_events_write(node, ev, when):
+    if not ev:
+        return
+    with MS_LOCK:
+        new = not os.path.exists(MS_EVENTS)
+        with open(MS_EVENTS, 'a', encoding='utf-8-sig', newline='') as f:
+            w = csv.writer(f, delimiter=';')
+            if new:
+                w.writerow(MS_COLS)
+            for e in ev:
+                w.writerow([when, node, e['id'], e['seller'], e['title'][:100], '' if e['price'] is None else e['price'],
+                            e['was'], e['now'], e['sold']])
+
+
+def ms_day_bump(field):
+    day = datetime.date.today().isoformat()
+    with MS_LOCK:
+        st = read_json(MS_STATE, {})
+        days = st.setdefault('days', {})
+        d = days.setdefault(day, {'passes': 0, 'errors': 0, 'incomplete': 0})
+        d[field] = int(d.get(field, 0)) + 1
+        for old in sorted(days)[:-60]:
+            del days[old]
+        write_json_atomic(MS_STATE, st)
+
+
+def ms_stop_today(s):
+    """Блокировка/капча/редирект: как у загрузчика, до конца дня (общий fetch_state.json); ответ сайта сохраняется для просмотра."""
+    day = today()
+    try:
+        with open(STATE, 'w', encoding='utf-8') as f:
+            json.dump({'дата': day, 'результат': 'остановлен: ' + s.title + ' (счёт продаж)',
+                       'время': datetime.datetime.now().isoformat(timespec='seconds')}, f, ensure_ascii=False)
+        if s.body:
+            os.makedirs(PAGES, exist_ok=True)
+            with open(os.path.join(PAGES, f'_stop_{day}.html'), 'wb') as f:
+                f.write(s.body[:500000])
+    except OSError:
+        pass
+    MS['stopped'] = f'{s.title}. {s.detail}'.strip()
+    tg_notify('lock', '⛔ Счёт продаж остановлен: ' + s.title + '. Опрос выключен до завтра, ничего не обходится.')
+
+
+def ms_pass(cfg):
+    """Один проход. Возвращает короткий текст результата (для статуса)."""
+    if protection()['stopped']:
+        MS['note'] = 'сегодня проход остановлен, опрос не идёт до завтра'
+        return MS['note']
+    if FETCH['running']:
+        MS['note'] = 'идёт загрузка снимка, проход пропущен'
+        return MS['note']
+    path = f"/lots/{cfg['node']}/"
+    interval_s = float(MS_FORCE_SEC) if MS_FORCE_SEC else cfg['interval_min'] * 60.0
+    if MS['cat'] != cfg['node']:
+        MS.update(cat=cfg['node'], lots=0, with_amount=0, no_amount=0)
+        MS['base'].clear()                     # другая категория: остатки старой не сравниваем
+    try:
+        status, final, body = http_get(SITE_BASE + path, CURRENCY_COOKIES['rub'])
+        text, items = check_page(status, final, body, path)
+    except FetchStop as s:
+        if s.code == 2:
+            ms_stop_today(s)
+            return 'остановлено: ' + s.title
+        MS['err'], MS['err_at'] = f'{s.title}. {s.detail}'.strip(), datetime.datetime.now().isoformat(timespec='seconds')
+        ms_day_bump('errors')
+        return 'сбой: ' + s.title
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
+        MS['err'], MS['err_at'] = f'Нет связи с сайтом: {type(e).__name__}', datetime.datetime.now().isoformat(timespec='seconds')
+        ms_day_bump('errors')
+        return 'нет связи'
+    MS['err'] = ''
+    if MS['lots'] >= 200 and items < 0.7 * MS['lots']:
+        MS['note'] = f"страница неполная (лотов {items}, было {MS['lots']}): проход не засчитан"
+        ms_day_bump('incomplete')
+        return MS['note']
+    rows = ms_parse(text)
+    with_am = sum(1 for r in rows if r['amount'] is not None)
+    MS['lots'], MS['with_amount'] = len(rows), with_am
+    if with_am == 0:
+        MS['no_amount'] += 1
+        MS['note'] = 'на странице категории не найден остаток (.tc-amount): считать нечего'
+        if MS['no_amount'] >= MS_NO_AMOUNT_STOP:
+            raw = read_json(MS_SET, {})
+            raw['enabled'] = False
+            write_json_atomic(MS_SET, raw)
+            MS['note'] += '. Опрос выключен: сайт не отдаёт остаток гостю, пришлите сохранённую страницу категории'
+        return MS['note']
+    MS['no_amount'] = 0
+    now = time.time()
+    ev, st = ms_count(MS['base'], rows, now, interval_s, cfg['max_sale'])
+    ms_events_write(cfg['node'], ev, datetime.datetime.now().isoformat(timespec='seconds'))
+    ms_day_bump('passes')
+    MS['passes'] += 1
+    MS['last'] = datetime.datetime.now().isoformat(timespec='seconds')
+    MS['last_stats'] = st
+    MS['note'] = ''
+    return f"лотов {len(rows)}, с остатком {with_am}, продаж-событий {len(ev)}"
+
+
+def ms_loop():
+    time.sleep(MS_FIRST_DELAY)
+    while True:
+        t0, cfg = time.time(), ms_read()
+        if cfg['enabled']:
+            try:
+                ms_pass(cfg)
+            except Exception as e:
+                MS['err'], MS['err_at'] = f'{type(e).__name__}: {e}', datetime.datetime.now().isoformat(timespec='seconds')
+                traceback.print_exc()
+            wait = (float(MS_FORCE_SEC) if MS_FORCE_SEC else cfg['interval_min'] * 60.0) - (time.time() - t0)
+        else:
+            wait = 10
+        time.sleep(max(1.0 if MS_FORCE_SEC else 5.0, wait))
+
+
+def ms_events_read(since):
+    rows = []
+    try:
+        with open(MS_EVENTS, encoding='utf-8-sig', newline='') as f:
+            for r in csv.DictReader(f, delimiter=';'):
+                try:
+                    t = datetime.datetime.fromisoformat(r.get('время', ''))
+                    sold = int(r.get('продано') or 0)
+                except ValueError:
+                    continue
+                if t >= since and sold > 0:
+                    pr = r.get('цена_руб', '')
+                    rows.append({'t': t, 'id': r.get('id', ''), 'seller': r.get('продавец', ''), 'title': r.get('название', ''),
+                                 'price': float(pr) if pr not in ('', None) else None, 'sold': sold})
+    except OSError:
+        pass
+    return rows
+
+
+def ms_status(_q=None):
+    cfg, day = ms_read(), datetime.date.today().isoformat()
+    prot, today_ev = protection(), ms_events_read(datetime.datetime.combine(datetime.date.today(), datetime.time.min))
+    d = read_json(MS_STATE, {}).get('days', {}).get(day, {})
+    if prot['stopped']:
+        state = 'stopped'
+    elif not cfg['enabled']:
+        state = 'off'
+    elif MS['err']:
+        state = 'error'
+    else:
+        state = 'on'
+    return 200, {'cfg': cfg, 'state': state, 'stopped': prot['reason'] if prot['stopped'] else '', 'err': MS['err'], 'err_at': MS['err_at'],
+                 'note': MS['note'], 'last': MS['last'], 'lots': MS['lots'], 'with_amount': MS['with_amount'],
+                 'passes_run': MS['passes'], 'last_stats': MS['last_stats'], 'base': len(MS['base']),
+                 'day': {'passes': d.get('passes', 0), 'errors': d.get('errors', 0), 'incomplete': d.get('incomplete', 0)},
+                 'today_sold': sum(e['sold'] for e in today_ev), 'today_events': len(today_ev)}
+
+
+def ms_report(q):
+    try:
+        days = int(q.get('days', '1'))
+    except ValueError:
+        days = 0
+    if not 1 <= days <= 365:
+        return 400, {'error': 'Период: от 1 до 365 дней.'}
+    needle = str(q.get('q', '')).strip().casefold()[:80]
+    now = datetime.datetime.now()
+    since = datetime.datetime.combine(now.date() - datetime.timedelta(days=days - 1), datetime.time.min)
+    ev = [e for e in ms_events_read(since) if not needle or needle in e['seller'].casefold() or needle in e['title'].casefold()]
+    sellers, lots, per_day = {}, {}, {}
+    for e in ev:
+        rev = e['sold'] * (e['price'] or 0)
+        s = sellers.setdefault(e['seller'], {'seller': e['seller'], 'sold': 0, 'rev': 0.0, 'events': 0, 'lots': set(), 'last': ''})
+        s['sold'] += e['sold']
+        s['rev'] += rev
+        s['events'] += 1
+        s['lots'].add(e['id'])
+        s['last'] = max(s['last'], e['t'].strftime('%d.%m %H:%M'))
+        k = lots.setdefault(e['id'], {'id': e['id'], 'seller': e['seller'], 'title': e['title'], 'price': e['price'], 'sold': 0, 'rev': 0.0, 'events': 0})
+        k['sold'] += e['sold']
+        k['rev'] += rev
+        k['events'] += 1
+        k['price'], k['title'] = e['price'], e['title']
+        pd = per_day.setdefault(e['t'].date().isoformat(), {'sold': 0, 'rev': 0.0})
+        pd['sold'] += e['sold']
+        pd['rev'] += rev
+    cover = read_json(MS_STATE, {}).get('days', {})
+    day_rows = []
+    for i in range(days):
+        d = (now.date() - datetime.timedelta(days=i)).isoformat()
+        c = cover.get(d, {})
+        day_rows.append({'date': d, 'sold': per_day.get(d, {}).get('sold', 0), 'rev': round(per_day.get(d, {}).get('rev', 0)),
+                         'passes': c.get('passes', 0), 'errors': c.get('errors', 0), 'incomplete': c.get('incomplete', 0)})
+    sl = sorted(({**s, 'lots': len(s['lots']), 'rev': round(s['rev'])} for s in sellers.values()), key=lambda x: -x['sold'])
+    ll = sorted(({**k, 'rev': round(k['rev'])} for k in lots.values()), key=lambda x: -x['sold'])
+    return 200, {'days': days, 'tot': {'sold': sum(e['sold'] for e in ev), 'rev': round(sum(e['sold'] * (e['price'] or 0) for e in ev)),
+                                       'events': len(ev), 'sellers': len(sellers), 'lots': len(lots)},
+                 'sellers': sl[:300], 'lots': ll[:300], 'per_day': day_rows}
+
+
+def h_ms_settings(b):
+    cfg = ms_read()
+    if 'enabled' in b:
+        if not isinstance(b['enabled'], bool):
+            return 400, {'error': 'Поле enabled: нужно да/нет.'}
+        cfg['enabled'] = b['enabled']
+    for k, lo, hi in (('interval_min', 1, 60), ('node', 1, 99999999), ('max_sale', 1, 1000)):
+        if k in b:
+            v = b[k]
+            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+                return 400, {'error': f'Поле {k}: целое число от {lo} до {hi}.'}
+            cfg[k] = v
+    if cfg['enabled']:
+        MS['no_amount'], MS['stopped'] = 0, ''
+    try:
+        write_json_atomic(MS_SET, cfg)
+    except OSError as e:
+        return 500, {'error': f'не удалось записать market_sales_settings.json: {e}'}
+    return 200, {'ok': True}
+
+
+ROUTES_MS = {'GET': {'/api/ms/status': ms_status, '/api/ms/report': ms_report}, 'POST': {'/api/ms/settings': h_ms_settings}}
+
+
 # ===== 9. Статистика ===================================================================================
 # Ваши продажи, прибыльные и слабые лоты, позиция по цене, кандидаты на повышение цены, баланс.
 # Откуда данные:
@@ -6299,7 +6612,7 @@ def h_security_ack(_b=None):
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
 # в своём разделе; здесь они склеиваются. Обработчик: функция(body_или_query: dict) -> (HTTP-код, dict).
 ROUTES = {'GET': {}, 'POST': {}}
-for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_STATS, ROUTES_STATV1):
+for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_MS, ROUTES_STATS, ROUTES_STATV1):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
 ROUTES['GET']['/api/backups'] = h_backups_list
@@ -6563,12 +6876,15 @@ def cmd_serve():
     threading.Thread(target=auto_loop, daemon=True).start()   # вход по ключу из переменной делает цикл автопилота
     threading.Thread(target=ap_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
+    threading.Thread(target=ms_loop, daemon=True).start()   # счёт продаж по остатку (раздел 8е); по умолчанию выключен
     if CLOUD:
         sec_load_events()
         print(f'Защита входа: {SEC_DISTINCT} разных неверных паролей с одного IP за {SEC_WINDOW // 60} мин блокируют IP, журнал: {SEC_LOG}')
     tg_start()
     _tok, _chat = tg_creds()
     print('Telegram: ' + ('оповещения включены' if (_tok and _chat and tg_read()['enabled']) else 'не настроен (TG_BOT_TOKEN и TG_CHAT_ID или tg_token.txt)') + '.')
+    _m = ms_read()
+    print('Счёт продаж по остатку: ' + (f"включён, раз в {_m['interval_min']} мин" if _m['enabled'] else 'выключен') + '. Настройки на вкладке «Продажи».')
     print('Автопилот: ' + ('включён' if ap_read()['enabled'] else 'выключен') + ', первый цикл через 45 с. Отправки сообщений включаются отдельно на вкладке «Автопилот».')
     try:
         srv.serve_forever()
