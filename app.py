@@ -18,7 +18,7 @@ README.md (карта проекта для людей и агентов: чит
    8в. Просьба об отзыве: шаблоны на лот, одна просьба на заказ (этап 2)
    9. Статистика                                            (бывш. stats_tab.py)
   9б. Статистика v1: награды, расходы, метрики по ID лота, подсказки, отчёт
-  8д. Telegram: оповещения и команды статус/пауза/старт (версия 1.15)
+  8д. Telegram: оповещения, кнопки, команды, ежедневная сводка (версия 1.16)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
 
@@ -43,7 +43,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.15'
+VERSION = '1.16'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -2811,6 +2811,10 @@ def conf_sync(rows, now):
     """Вызывается из remind_scan с уже прочитанными заказами. Заводит «Оплачен» как paid; тем, что уже в учёте,
     ставит confirmed («Закрыт») или refunded («Возврат»). Своих запросов к сайту не делает."""
     cnt = {'new': 0, 'confirmed': 0, 'refunded': 0}
+    try:
+        tg_orders_seen(rows, now)                 # раздел 8д: оповещение о новых оплаченных заказах; сбой не должен ломать учёт
+    except Exception:
+        traceback.print_exc()
     with CONF_LOCK:
         d = conf_load()
         me = (ACC.get('me') or {}).get('uid')
@@ -4235,16 +4239,30 @@ ROUTES_AUTOPILOT = {'GET': {'/api/autopilot/status': ap_status},
                              '/api/autopilot/resume': ap_resume}}
 
 
-# ===== 8д. Telegram: оповещения и команды (версия 1.15) ================================================
+# ===== 8д. Telegram: оповещения, кнопки, команды, сводка (версия 1.16) ================================================
 # Оповещения: блокировка сессии сайтом, golden_key перестал работать, пауза автоотправки, ошибка цикла автопилота,
 # автовозврат, защита входа (блокировка IP, вход с нового IP), запуск программы (после перезапуска или возврата сервиса).
-# Команды из чата: статус, пауза, старт (работают только из ЛИЧНОГО чата с вашим chat_id; остальные сообщения молча игнорируются).
+# Версия 1.16: оповещение о новом оплаченном заказе (один раз на заказ, список в tg_orders.json; первый запуск только запоминает
+# заказы без оповещений; порог суммы и часовой пояс настраиваются), кнопки под сообщениями, команды /orders и /stats,
+# ежедневная сводка в заданное время с поправкой от UTC. Новых запросов к сайту нет: заказы берутся из страницы /orders/trade,
+# которую автопилот уже читает (conf_sync), статистика из orders_cache.json (его обновляет шаг «Статистика»).
+# Команды и кнопки: статус, пауза, старт, заказы, статистика (только из ЛИЧНОГО чата с вашим chat_id; остальное молча игнорируется).
 # Токен бота и chat_id: переменные TG_BOT_TOKEN и TG_CHAT_ID (Railway) или файл tg_token.txt рядом с программой
 # (строка 1: токен, строка 2: chat_id). СЕКРЕТЫ: в настройки, журналы, ответы API и резервные копии не попадают.
 # Сбой Telegram работу программы не останавливает: сообщение повторяется 3 раза и отбрасывается, причина видна на вкладке «Автопилот».
 # Ничего не обходится: если Telegram недоступен или токен отклонён, программа об этом только сообщает.
 TG_CFG = P('tg_settings.json')
-TG_STATE = P('tg_state.json')            # только время последнего оповещения о запуске (защита от потока при перезапусках)
+TG_STATE = P('tg_state.json')            # время последнего оповещения о запуске и дата последней сводки (защита от дублей при перезапусках)
+TG_ORDERS = P('tg_orders.json')          # номера заказов, о которых уже оповещали или которые видели при первом запуске (без секретов)
+TG_ORD_LOCK = threading.Lock()
+TG_STATE_LOCK = threading.Lock()
+TG_NUMS = (('min_amount', 0, 10000000, 0), ('tz', -12, 14, 3))     # (поле, мин, макс, по умолчанию)
+TG_SUMMARY_LATE = 3 * 3600               # если программа была выключена в час сводки, догнать можно не позже чем через 3 часа
+TG_KEYBOARD = json.dumps({'inline_keyboard': [[{'text': '📊 Статус', 'callback_data': 'status'},
+                                               {'text': '⏸ Пауза', 'callback_data': 'pause'},
+                                               {'text': '▶️ Старт', 'callback_data': 'start'}],
+                                              [{'text': '📦 Заказы', 'callback_data': 'orders'},
+                                               {'text': '💰 Статистика', 'callback_data': 'stats'}]]}, ensure_ascii=False)
 TG_TOKEN_FILE = P('tg_token.txt')        # СЕКРЕТ (.txt в копии не входит)
 TG_BASE = os.environ.get('MARKET_TEST_TG_BASE', 'https://api.telegram.org')   # MARKET_TEST_*: только для проверки на локальном сервере
 TG_EVENTS = (('lock', 'Сайт заблокировал сессию (блокировка, капча)'),
@@ -4254,7 +4272,9 @@ TG_EVENTS = (('lock', 'Сайт заблокировал сессию (блок�
              ('loop', 'Ошибка цикла автопилота'),
              ('refund', 'Автовозврат выполнен'),
              ('security', 'Защита входа: блокировка IP, вход с нового IP'),
-             ('start', 'Программа запущена (после перезапуска)'))
+             ('start', 'Программа запущена (после перезапуска)'),
+             ('order', 'Новый оплаченный заказ'),
+             ('summary', 'Ежедневная сводка'))
 TG_COOLDOWN = {'loop': 3600, 'key': 6 * 3600, 'security': 600}   # секунд между одинаковыми оповещениями
 TG_RETRY = (10, 30, 60)                  # повторы отправки при сбое связи, секунд
 TG_START_GAP = 180                       # оповещение о запуске не чаще раза в 3 минуты (если сервис перезапускается по кругу)
@@ -4270,7 +4290,13 @@ class TgError(Exception):
 
 
 def tg_read():
-    raw, cfg = read_json(TG_CFG, {}), {'enabled': True, 'commands': True, 'events': {k: True for k, _l in TG_EVENTS}}
+    raw, cfg = read_json(TG_CFG, {}), {'enabled': True, 'commands': True, 'events': {k: True for k, _l in TG_EVENTS},
+                                       'summary_time': '21:00'}
+    for k, lo, hi, dflt in TG_NUMS:
+        v = raw.get(k)
+        cfg[k] = v if (isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi) else dflt
+    if isinstance(raw.get('summary_time'), str) and re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', raw['summary_time']):
+        cfg['summary_time'] = raw['summary_time']
     for k in ('enabled', 'commands'):
         if isinstance(raw.get(k), bool):
             cfg[k] = raw[k]
@@ -4353,7 +4379,10 @@ def tg_reply(text):
 def tg_deliver(chat, text):
     for i in range(len(TG_RETRY) + 1):
         try:
-            tg_call('sendMessage', {'chat_id': chat, 'text': text, 'disable_web_page_preview': 'true'}, 25)
+            params = {'chat_id': chat, 'text': text, 'disable_web_page_preview': 'true'}
+            if not chat.startswith('-'):
+                params['reply_markup'] = TG_KEYBOARD       # кнопки только в личном чате: нажатия из групп всё равно не принимаются
+            tg_call('sendMessage', params, 25)
             TG['sent'] += 1
             TG['err'] = ''
             return True
@@ -4462,13 +4491,229 @@ def tg_cmd_start():
         ap_log('Telegram', 'команда «старт»: ' + ', '.join(done))
     return '▶️ ' + ('; '.join(done) if done else 'Менять нечего: автопилот уже включён и пауз нет.') + ('\n' + left if left else '')
 
+# ---- время, заказы, статистика (без запросов к сайту) ----
+def tg_local_now(cfg=None):
+    off = (cfg or tg_read())['tz']
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) + datetime.timedelta(hours=off)
 
-TG_HELP = 'Команды: статус (/status), пауза (/pause), старт (/start). Больше ничего бот не делает.'
+
+def tg_srv_to_local(iso, cfg):
+    """Время из файлов программы (часы сервера: на Railway это UTC, на ПК местные) -> время по вашему поясу, строкой."""
+    try:
+        t = datetime.datetime.fromisoformat(str(iso))
+    except ValueError:
+        return str(iso)
+    srv_off = (datetime.datetime.now() - datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)).total_seconds() / 3600
+    return (t + datetime.timedelta(hours=cfg['tz'] - round(srv_off * 2) / 2)).strftime('%d.%m %H:%M')
+
+
+def tg_tz_label(cfg):
+    return 'UTC' + (f'{cfg["tz"]:+g}' if cfg['tz'] else '')
+
+
+def tg_money(x):
+    return f'{round(x):,}'.replace(',', ' ') + ' ₽'
+
+
+def tg_orders_seen(rows, now):
+    """Вызывается из conf_sync с уже прочитанными строками /orders/trade (своих запросов нет). Оповещает один раз о каждом
+    новом заказе со статусом «Оплачен». Первый запуск (файла нет, пустой или повреждён) только запоминает заказы, без оповещений.
+    Заказ старше суток при первом появлении (подгрузился с дальней страницы) тоже только запоминается."""
+    fresh = []
+    cfg = tg_read()
+    with TG_ORD_LOCK:
+        db = read_json(TG_ORDERS, {})
+        ids = db.get('ids') if isinstance(db, dict) and isinstance(db.get('ids'), dict) else None
+        first = ids is None
+        if first and not rows:
+            return
+        ids, changed = ({} if first else ids), first
+        stamp = now.replace(microsecond=0).isoformat()
+        for r in rows:
+            oid = str(r.get('id') or '').upper()
+            if not oid or oid in ids:
+                continue
+            ids[oid] = stamp
+            changed = True
+            if first or r.get('status') != 'paid':
+                continue
+            ts = r.get('ts')
+            if ts is not None and abs((now - ts).total_seconds()) > 24 * 3600:
+                continue
+            fresh.append(r)
+        if changed:
+            if len(ids) > 5000:
+                ids = dict(sorted(ids.items(), key=lambda kv: kv[1])[-4000:])
+            write_json_atomic(TG_ORDERS, {'ids': ids, 'baseline': (db.get('baseline') if isinstance(db, dict) else '') or stamp})
+    lim = cfg['min_amount']
+    show = [r for r in fresh if not (lim > 0 and r.get('price') is not None and r.get('cur') == '₽' and r['price'] < lim)]
+    if not show:
+        return
+    when = tg_local_now(cfg).strftime('%H:%M') + ' ' + tg_tz_label(cfg)
+    def line(r):
+        return '#{} · {} · {}'.format(r['id'], tg_money(r['price']) if r.get('price') is not None and r.get('cur') == '₽' else 'сумма не определена',
+                                       (r.get('title') or 'лот не определён')[:60])
+    if len(show) == 1:
+        r = show[0]
+        text = '🛒 Новый оплаченный заказ #{}\nЛот: {}\nСумма: {}\nЗамечен в {}'.format(
+            r['id'], (r.get('title') or 'не определён')[:100],
+            tg_money(r['price']) if r.get('price') is not None and r.get('cur') == '₽' else 'не определена', when)
+    else:
+        tot = sum(r['price'] for r in show if r.get('price') is not None and r.get('cur') == '₽')
+        text = f'🛒 Новых оплаченных заказов: {len(show)} (на {tg_money(tot)})\n' + '\n'.join(line(r) for r in show[:10]) \
+               + (f'\n…и ещё {len(show) - 10}' if len(show) > 10 else '') + f'\nЗамечены в {when}'
+    tg_notify('order', text, key='order' + ','.join(r['id'] for r in show))
+
+
+def tg_period(cache, since):
+    """Заказы кэша (₽, с датой) начиная с since: счётчики и суммы. Выручка = подтверждённые (как в статистике)."""
+    t = {'closed': 0, 'paid': 0, 'refund': 0, 'rev': 0.0, 'pending': 0.0, 'refund_sum': 0.0}
+    for o in cache.get('orders', {}).values():
+        ts = order_ts(o)
+        if o.get('cur') != '₽' or o.get('price') is None or not ts or ts < since or o.get('status') not in ('closed', 'paid', 'refund'):
+            continue
+        t[o['status']] += 1
+        t['rev' if o['status'] == 'closed' else 'pending' if o['status'] == 'paid' else 'refund_sum'] += o['price']
+    t['n'] = t['closed'] + t['paid'] + t['refund']
+    return t
+
+
+def tg_period_line(name, t, fee):
+    s = f'{name}: заказов {t["n"]} (подтверждено {t["closed"]}, ждут подтверждения {t["paid"]}, возвратов {t["refund"]}); ' \
+        f'выручка подтверждённых {tg_money(t["rev"])}'
+    if fee > 0:
+        s += f' (после комиссии {fee:g}%: {tg_money(t["rev"] * (1 - fee / 100))})'
+    if t['paid']:
+        s += f'; ждёт подтверждения на {tg_money(t["pending"])}'
+    return s
+
+
+def tg_stats_lines(cfg):
+    cache = read_json(ORDERS_CACHE, {'orders': {}})
+    fee = float(read_json(LOT_COSTS, {'fee': 0}).get('fee') or 0)
+    now = tg_local_now(cfg)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week = today - datetime.timedelta(days=6)
+    L = [tg_period_line(f'Сегодня ({today.strftime("%d.%m")})', tg_period(cache, today), fee),
+         tg_period_line(f'7 дней (с {week.strftime("%d.%m")})', tg_period(cache, week), fee)]
+    upd = cache.get('updated', '')
+    stamps = [order_ts(o) for o in cache.get('orders', {}).values() if order_ts(o)]
+    note = 'Данные заказов обновлены ' + (tg_srv_to_local(upd, cfg) if upd else 'ещё ни разу: шаг «Статистика» автопилота не выполнялся')
+    if stamps and min(stamps) > week:
+        note += f'. Самый старый заказ в данных от {min(stamps).strftime("%d.%m")}: неделя может быть неполной (читаются первые страницы списка заказов)'
+    nodate = sum(1 for o in cache.get('orders', {}).values() if not o.get('ts'))
+    if nodate:
+        note += f'. Заказов без даты (не учтены): {nodate}'
+    L.append(note + '.')
+    return L
+
+
+def tg_cmd_stats():
+    cfg = tg_read()
+    return '💰 Заказы и выручка (время ' + tg_tz_label(cfg) + ')\n' + '\n'.join(tg_stats_lines(cfg))
+
+
+def tg_pending_lines(limit=15):
+    d, now = conf_load(), datetime.datetime.now()
+    rows = [conf_view(d, o, now) for o in d['orders'].values() if o['status'] not in CONF_DONE]
+    rows.sort(key=lambda r: (not r['overdue'], r['deadline'] or '9999', r['paid_at'] or ''))
+    by = collections.Counter(r['status'] for r in rows)
+    head = f'Ждут подтверждения: {len(rows)}' + (f' (оплачен {by["paid"]}, выдан {by["delivered"]}, напоминание отправлено {by["reminded"]})' if rows else '') \
+           + (f', просрочено {sum(1 for r in rows if r["overdue"])}' if any(r['overdue'] for r in rows) else '')
+    L = [head]
+    for r in rows[:limit]:
+        pr = r['price']
+        L.append('#{} · {} · {}{}'.format(r['id'], (str(pr) + ' ₽') if pr not in ('', None) else 'сумма ?', r['status_ru'],
+                                          (' · ' + r['left']) if r['left'] else ''))
+    if len(rows) > limit:
+        L.append(f'…и ещё {len(rows) - limit} (полный список на вкладке «Подтверждения»)')
+    return L
+
+
+def tg_cmd_orders():
+    p = tg_pending_lines()
+    L = ['📦 ' + p[0]] + p[1:]
+    L.append('По данным последнего цикла автопилота' + (': ' + tg_srv_to_local(AP['ended'], tg_read()) if AP.get('ended') else ' (цикл ещё не выполнялся)') + '.')
+    return '\n'.join(L)
+
+
+def tg_summary_text(cfg):
+    now = tg_local_now(cfg)
+    L = [f'📊 Сводка за {now.strftime("%d.%m")} (время {tg_tz_label(cfg)})'] + tg_stats_lines(cfg) + tg_pending_lines(8)
+    ap = ap_read()
+    L.append('Автопилот: ' + ('включён' if ap['enabled'] else 'ВЫКЛЮЧЕН') + (', отправки на паузе' if AP['paused'] else '')
+             + ('; ⛔ сессия заблокирована сайтом' if ACC['locked'] else '') + ('; 🔑 golden_key не работает' if ACC.get('key_bad') else ''))
+    return '\n'.join(L)[:3500]
+
+
+def tg_state_set(**kw):
+    with TG_STATE_LOCK:
+        st = read_json(TG_STATE, {})
+        st.update(kw)
+        write_json_atomic(TG_STATE, st)
+
+
+def tg_summary_tick():
+    cfg = tg_read()
+    if not (cfg['enabled'] and cfg['events'].get('summary')):
+        return
+    tok, chat = tg_creds()
+    if not (tok and chat):
+        return
+    now = tg_local_now(cfg)
+    hh, mm = (int(x) for x in cfg['summary_time'].split(':'))
+    due = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    day = now.date().isoformat()
+    if now < due or (now - due).total_seconds() > TG_SUMMARY_LATE or read_json(TG_STATE, {}).get('summary_day') == day:
+        return
+    tg_state_set(summary_day=day)                 # отметка ДО отправки: перезапуск и деплой в этот час не дублируют сводку
+    tg_notify('summary', tg_summary_text(cfg))
+
+
+def tg_summary_loop():
+    time.sleep(30)
+    while True:
+        try:
+            tg_summary_tick()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(30)
+
+
+TG_HELP = ('Команды: статус (/status), пауза (/pause), старт (/start), заказы (/orders), статистика (/stats). '
+           'Они же кнопками под сообщениями. Больше ничего бот не делает.')
 TG_COMMANDS = {'status': tg_cmd_status, 'статус': tg_cmd_status, 'pause': tg_cmd_pause, 'пауза': tg_cmd_pause,
-               'start': tg_cmd_start, 'старт': tg_cmd_start, 'help': lambda: TG_HELP, 'помощь': lambda: TG_HELP}
+               'start': tg_cmd_start, 'старт': tg_cmd_start, 'orders': tg_cmd_orders, 'заказы': tg_cmd_orders,
+               'stats': tg_cmd_stats, 'статистика': tg_cmd_stats, 'сводка': tg_cmd_stats,
+               'help': lambda: TG_HELP, 'помощь': lambda: TG_HELP}
+TG_BUTTONS = ('status', 'pause', 'start', 'orders', 'stats')      # допустимые callback_data (всё остальное игнорируется)
+
+
+def tg_handle_callback(cb, chat):
+    """Нажатие кнопки. Принимается только из личного чата с вашим chat_id и только от вас (from.id совпадает с chat_id)."""
+    m = cb.get('message') or {}
+    c = m.get('chat') or {}
+    fr = cb.get('from') or {}
+    if str(c.get('id')) != chat or c.get('type') != 'private' or fr.get('is_bot') or str(fr.get('id')) != chat:
+        TG['foreign'] += 1
+        return
+    try:
+        tg_call('answerCallbackQuery', {'callback_query_id': str(cb.get('id') or '')}, 15)     # убрать «часики» на кнопке
+    except TgError:
+        pass
+    data = str(cb.get('data') or '')
+    if data not in TG_BUTTONS:
+        return
+    try:
+        tg_reply(TG_COMMANDS[data]())
+    except Exception as e:
+        traceback.print_exc()
+        tg_reply(f'Команда не выполнена: {type(e).__name__}: {e}')
 
 
 def tg_handle_update(u, chat):
+    if u.get('callback_query'):
+        return tg_handle_callback(u['callback_query'], chat)
     m = u.get('message') or {}
     c = m.get('chat') or {}
     if str(c.get('id')) != chat or c.get('type') != 'private' or (m.get('from') or {}).get('is_bot'):
@@ -4507,13 +4752,15 @@ def tg_poll_loop():
                 try:
                     tg_call('setMyCommands', {'commands': json.dumps([{'command': 'status', 'description': 'Состояние автопилота'},
                                                                       {'command': 'pause', 'description': 'Остановить автопилот'},
-                                                                      {'command': 'start', 'description': 'Запустить автопилот'}])}, 20)
+                                                                      {'command': 'start', 'description': 'Запустить автопилот'},
+                                                                      {'command': 'orders', 'description': 'Что ждёт подтверждения'},
+                                                                      {'command': 'stats', 'description': 'Заказы и выручка'}])}, 20)
                 except TgError:
                     pass
             if TG['offset'] is None:             # накопившиеся за время простоя сообщения пропускаем, чтобы старая команда не сработала
                 res = tg_call('getUpdates', {'offset': -1, 'timeout': 0}, 20)
                 TG['offset'] = (res[-1]['update_id'] + 1) if res else 0
-            res = tg_call('getUpdates', {'offset': TG['offset'], 'timeout': 25, 'allowed_updates': json.dumps(['message'])}, 45)
+            res = tg_call('getUpdates', {'offset': TG['offset'], 'timeout': 25, 'allowed_updates': json.dumps(['message', 'callback_query'])}, 45)
             TG['poll'] = 'работает'
             for u in res or []:
                 TG['offset'] = u['update_id'] + 1
@@ -4533,10 +4780,11 @@ def tg_start():
     TG['started'] = True
     threading.Thread(target=tg_send_loop, daemon=True).start()
     threading.Thread(target=tg_poll_loop, daemon=True).start()
+    threading.Thread(target=tg_summary_loop, daemon=True).start()
     st = read_json(TG_STATE, {})
     if time.time() - float(st.get('start_at') or 0) >= TG_START_GAP:
         try:
-            write_json_atomic(TG_STATE, {'start_at': time.time()})
+            tg_state_set(start_at=time.time())
         except OSError:
             pass
         tg_notify('start', '🟢 Программа запущена. Автопилот: ' + ('включён' if ap_read()['enabled'] else 'выключен')
@@ -4550,7 +4798,9 @@ def h_tg_status(_q=None):
                  'chat': 'нет' if not rc else (('…' + chat[-4:]) if chat else 'неверный формат'),
                  'private': bool(chat) and not chat.startswith('-'),
                  'sent': TG['sent'], 'failed': TG['failed'], 'err': TG['err'], 'err_at': TG['err_at'],
-                 'poll': TG['poll'], 'foreign': TG['foreign'], 'queued': len(TG['q'])}
+                 'poll': TG['poll'], 'foreign': TG['foreign'], 'queued': len(TG['q']),
+                 'orders_seen': len((read_json(TG_ORDERS, {}).get('ids') or {})), 'summary_day': str(read_json(TG_STATE, {}).get('summary_day') or ''),
+                 'now_local': tg_local_now(cfg).strftime('%d.%m %H:%M') + ' ' + tg_tz_label(cfg)}
 
 
 def h_tg_settings(b):
@@ -4560,6 +4810,16 @@ def h_tg_settings(b):
             if not isinstance(b[k], bool):
                 return 400, {'error': f'Поле {k}: нужно да/нет.'}
             cfg[k] = b[k]
+    for k, lo, hi, _d in TG_NUMS:
+        if k in b:
+            v = b[k]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+                return 400, {'error': f'Поле {k}: число от {lo} до {hi}.'}
+            cfg[k] = v
+    if 'summary_time' in b:
+        if not isinstance(b['summary_time'], str) or not re.fullmatch(r'([01]\d|2[0-3]):[0-5]\d', b['summary_time']):
+            return 400, {'error': 'Время сводки: формат ЧЧ:ММ, например 21:00.'}
+        cfg['summary_time'] = b['summary_time']
     if 'events' in b:
         if not isinstance(b['events'], dict):
             return 400, {'error': 'Поле events: нужен набор да/нет.'}

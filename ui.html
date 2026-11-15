@@ -224,7 +224,10 @@ details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summar
 <div class="box"><div class="cnt" id="tg-state">Читаю состояние…</div>
 <div class="cnt" style="margin-top:4px">Токен бота и ваш chat_id задаются вне программы: переменные TG_BOT_TOKEN и TG_CHAT_ID (Railway) или файл tg_token.txt рядом с app.py (строка 1 токен, строка 2 chat_id). На экран и в журналы они не попадают. Команды принимаются только из личного чата с вашим chat_id.</div>
 <div class="bar" style="margin-top:8px"><label><input type="checkbox" id="tg-enabled"> Оповещения включены</label>
-<label><input type="checkbox" id="tg-commands"> Команды из чата: статус, пауза, старт</label></div>
+<label><input type="checkbox" id="tg-commands"> Команды и кнопки в чате: статус, пауза, старт, заказы, статистика</label></div>
+<div class="bar"><label>Оповещать о заказах от, ₽ (0 = обо всех): <input type="number" id="tg-min" min="0" style="width:90px"></label>
+<label>Часовой пояс, UTC+: <input type="number" id="tg-tz" min="-12" max="14" step="0.5" style="width:70px"></label>
+<label>Сводка раз в день в: <input type="time" id="tg-time"></label></div>
 <div class="fh">Присылать оповещения о</div>
 <div class="bar" id="tg-events"></div>
 <div class="bar"><button type="button" id="tg-save">Сохранить</button><button type="button" id="tg-test">Отправить тест</button></div></div>
@@ -1348,7 +1351,7 @@ var TGW={};
 function tgLoad(){
   return api('/api/tg/status').then(function(d){
     var c=d.cfg,box=$('tg-events');
-    $('tg-enabled').checked=c.enabled;$('tg-commands').checked=c.commands;
+    $('tg-enabled').checked=c.enabled;$('tg-commands').checked=c.commands;$('tg-min').value=c.min_amount;$('tg-tz').value=c.tz;$('tg-time').value=c.summary_time;
     box.textContent='';TGW={};
     d.events.forEach(function(e){var lb=el('label'),i=el('input');i.type='checkbox';i.checked=!!c.events[e.key];TGW[e.key]=i;lb.appendChild(i);lb.appendChild(el('span','',' '+e.label));box.appendChild(lb);});
     var t='Токен: '+d.token+'; chat_id: '+d.chat+'. Отправлено: '+d.sent+(d.failed?', не доставлено: '+d.failed:'')+(d.queued?', в очереди: '+d.queued:'')+'.';
@@ -1356,12 +1359,13 @@ function tgLoad(){
     if(c.commands&&d.poll)t+=' Команды: '+d.poll+'.';
     if(d.chat!=='нет'&&d.chat!=='неверный формат'&&!d.private)t+=' chat_id похож на группу или канал: оповещения идут, команды отключены.';
     if(d.foreign)t+=' Сообщений от чужих чатов проигнорировано: '+d.foreign+'.';
+    t+=' Время по вашему поясу сейчас: '+d.now_local+'. Заказов запомнено: '+d.orders_seen+(d.summary_day?'; последняя сводка за '+d.summary_day:'')+'.';
     var s=$('tg-state');s.textContent=t;s.style.color=(d.err||d.token!=='есть'||d.chat==='нет'||d.chat==='неверный формат')?'var(--x)':'';
   }).catch(function(e){say(e.message,true);});
 }
 $('tg-save').addEventListener('click',function(){
   var ev={};Object.keys(TGW).forEach(function(k){ev[k]=TGW[k].checked;});
-  ap('/api/tg/settings',{enabled:$('tg-enabled').checked,commands:$('tg-commands').checked,events:ev}).then(function(){say('Настройки Telegram сохранены.');return tgLoad();}).catch(function(e){say(e.message,true);});
+  ap('/api/tg/settings',{enabled:$('tg-enabled').checked,commands:$('tg-commands').checked,events:ev,min_amount:Number($('tg-min').value||0),tz:Number($('tg-tz').value),summary_time:$('tg-time').value}).then(function(){say('Настройки Telegram сохранены.');return tgLoad();}).catch(function(e){say(e.message,true);});
 });
 $('tg-test').addEventListener('click',function(){
   $('tg-test').disabled=true;
