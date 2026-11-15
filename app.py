@@ -23,7 +23,7 @@ README.md (карта проекта для людей и агентов: чит
 
 Запуск: «Запустить.bat» или `python app.py`. Нужны только Python 3 и beautifulsoup4.
 """
-import zipfile, io
+import zipfile, io, tempfile
 import argparse, base64, collections, csv, datetime, gzip, hashlib, hmac, json, os, random, re, secrets, shutil, socket
 import statistics, subprocess, sys, threading, time, traceback, webbrowser
 import urllib.error, urllib.parse, urllib.request
@@ -42,7 +42,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.12.2'
+VERSION = '1.13'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5345,6 +5345,134 @@ ROUTES_STATV1 = {'GET': {}, 'POST': {
     '/api/stat/v1/details': need_login(h_sv1_details)}}
 
 
+# ===== 9b. Резервные копии ===============================================================================
+# Копия = все .json/.csv рядом с данными + папки history, reports, tickets, pages_own, out (папка pages только по просьбе).
+# golden_key.txt и сама папка backups в копию не входят. Внутри сервера копии лежат в DATA_DIR/backups:
+# раз в сутки (auto_), перед каждым импортом (before_import_), по кнопке (manual_). Защита от порчи файлов и
+# неудачного импорта; от потери тома защищает только скачанная копия или бэкап тома в Railway.
+BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+BACKUP_KEEP = {'auto_': 7, 'manual_': 5, 'before_import_': 3}
+BACKUP_MIN_FREE = 300 * 1024 * 1024
+BACKUP_LOCK = threading.Lock()
+BACKUP_NAME = re.compile(r'(auto|manual|before_import)_[0-9_\-]{8,20}\.zip')
+BACKUP_DIRS = ('history', 'reports', 'tickets', 'pages_own', 'out')
+
+
+def backup_files(with_pages=False):
+    """Что войдёт в копию: список (путь на диске, имя в архиве)."""
+    out = []
+    try:
+        for n in sorted(os.listdir(DATA_DIR)):
+            p = os.path.join(DATA_DIR, n)
+            if os.path.isfile(p) and n.lower().endswith(('.json', '.csv')):
+                out.append((p, n))
+    except OSError:
+        pass
+    for d in BACKUP_DIRS + (('pages',) if with_pages else ()):
+        for root, _dirs, files in os.walk(os.path.join(DATA_DIR, d)):
+            for n in sorted(files):
+                if n.endswith('.tmp') or n.lower() == 'golden_key.txt':
+                    continue
+                p = os.path.join(root, n)
+                out.append((p, os.path.relpath(p, DATA_DIR).replace(os.sep, '/')))
+    return out
+
+
+def backup_write(fileobj, with_pages=False):
+    """Пишет zip в открытый файл. Файл, который исчез или занят, пропускается, остальные кладутся."""
+    n = 0
+    with zipfile.ZipFile(fileobj, 'w', zipfile.ZIP_DEFLATED) as z:
+        for p, arc in backup_files(with_pages):
+            try:
+                z.write(p, arc)
+                n += 1
+            except OSError:
+                pass
+    return n
+
+
+def backup_prune(prefix):
+    keep = BACKUP_KEEP.get(prefix, 3)
+    try:
+        names = sorted(n for n in os.listdir(BACKUP_DIR) if n.startswith(prefix) and BACKUP_NAME.fullmatch(n))
+    except OSError:
+        return
+    for n in names[:-keep]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, n))
+        except OSError:
+            pass
+
+
+def backup_make(prefix):
+    """Лёгкая копия (без папки pages) в DATA_DIR/backups. Возвращает имя файла или '', если класть нечего."""
+    with BACKUP_LOCK:
+        if not backup_files():
+            return ''
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        if shutil.disk_usage(BACKUP_DIR).free < BACKUP_MIN_FREE:
+            raise OSError('на диске меньше 300 МБ свободного места')
+        name = prefix + datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S') + '.zip'
+        tmp, final = os.path.join(BACKUP_DIR, name + '.tmp'), os.path.join(BACKUP_DIR, name)
+        try:
+            with open(tmp, 'wb') as f:
+                backup_write(f)
+            os.replace(tmp, final)
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+    backup_prune(prefix)
+    return name
+
+
+def backup_daily():
+    today = datetime.date.today().isoformat()
+    try:
+        have = any(n.startswith('auto_' + today) for n in os.listdir(BACKUP_DIR))
+    except OSError:
+        have = False
+    if not have:
+        name = backup_make('auto_')
+        if name:
+            print(f'Резервная копия сделана: {name}')
+
+
+def backup_loop():
+    time.sleep(180)                       # дать программе запуститься; дальше проверка раз в час
+    while True:
+        try:
+            backup_daily()
+        except Exception as e:
+            print(f'Резервная копия не сделана: {type(e).__name__}: {e}')
+        time.sleep(3600)
+
+
+def h_backups_list(_q=None):
+    items = []
+    try:
+        for n in sorted(os.listdir(BACKUP_DIR), reverse=True):
+            if BACKUP_NAME.fullmatch(n):
+                p = os.path.join(BACKUP_DIR, n)
+                items.append({'name': n, 'size': os.path.getsize(p),
+                              'time': datetime.datetime.fromtimestamp(os.path.getmtime(p)).isoformat(timespec='minutes')})
+    except OSError:
+        pass
+    return 200, {'items': items}
+
+
+def h_backup_make(_b=None):
+    try:
+        name = backup_make('manual_')
+    except Exception as e:
+        return 500, {'error': f'Копия не сделана: {type(e).__name__}: {e}'}
+    if not name:
+        return 400, {'error': 'Копировать нечего: рядом с программой нет данных (.json/.csv).'}
+    return 200, {'ok': True, 'name': name}
+
+
 # ===== 10. HTTP-сервер и таблица маршрутов =============================================================
 # Слушает только 127.0.0.1. Страницу (ui.html) отдаёт с политикой CSP: браузер не даст ей грузить ничего снаружи
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
@@ -5353,6 +5481,8 @@ ROUTES = {'GET': {}, 'POST': {}}
 for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_STATS, ROUTES_STATV1):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
+ROUTES['GET']['/api/backups'] = h_backups_list
+ROUTES['POST']['/api/backups/make'] = h_backup_make
 
 
 class Server(ThreadingHTTPServer):
@@ -5380,6 +5510,26 @@ class Handler(BaseHTTPRequestHandler):
                          "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_stream(self, f, size, filename):
+        """Отдаёт файл целиком как скачивание (zip копии)."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/zip')
+        self.send_header('Content-Length', str(size))
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        shutil.copyfileobj(f, self.wfile, 1024 * 1024)
+
+    def _export_zip(self, with_pages):
+        with tempfile.TemporaryFile() as f:
+            with BACKUP_LOCK:
+                backup_write(f, with_pages)
+            size = f.tell()
+            f.seek(0)
+            name = 'funpay-backup-' + datetime.date.today().isoformat() + ('-pages' if with_pages else '') + '.zip'
+            return self._send_stream(f, size, name)
 
     def _auth_ok(self):
         """Облако: вход по логину и паролю (HTTP Basic, пароль из переменной APP_PASSWORD), с задержкой при ошибках."""
@@ -5427,6 +5577,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, f.read(), 'text/html; charset=utf-8')
             except OSError:
                 return self._send(500, {'error': 'Рядом с app.py не найден ui.html.'})
+        if u.path == '/api/export_zip':
+            try:
+                return self._export_zip(parse_qs(u.query).get('pages', ['0'])[0] == '1')
+            except Exception as e:
+                traceback.print_exc()
+                return self._send(500, {'error': f'Копия не собрана: {type(e).__name__}: {e}'})
+        if u.path == '/api/backup_get':
+            name = (parse_qs(u.query).get('name') or [''])[0]
+            p = os.path.join(BACKUP_DIR, name)
+            if not BACKUP_NAME.fullmatch(name):
+                return self._send(400, {'error': 'Неверное имя копии'})
+            if not os.path.isfile(p):
+                return self._send(404, {'error': 'Такой копии нет'})
+            with open(p, 'rb') as f:
+                return self._send_stream(f, os.path.getsize(p), name)
         fn = ROUTES['GET'].get(u.path)
         if not fn:
             return self._send(404, {'error': 'Нет такой страницы'})
@@ -5487,6 +5652,10 @@ def import_zip(data):
     infos = [i for i in z.infolist() if not i.is_dir()]
     if sum(i.file_size for i in infos) > IMPORT_MAX * 3:
         return 400, {'error': 'Архив слишком большой после распаковки.'}
+    try:
+        snap = backup_make('before_import_')          # страховка: импорт заменяет файлы с теми же именами
+    except Exception as e:
+        return 500, {'error': f'Импорт не выполнен: не удалось сделать копию текущих данных ({type(e).__name__}: {e}). Ничего не заменено.'}
     ok, skipped = 0, []
     for i in infos:
         parts = [p for p in i.filename.replace('\\', '/').split('/') if p]
@@ -5507,7 +5676,7 @@ def import_zip(data):
         with z.open(i) as src, open(dest, 'wb') as out:
             shutil.copyfileobj(src, out)
         ok += 1
-    return 200, {'ok': True, 'files': ok, 'skipped': len(skipped), 'skipped_sample': skipped[:8]}
+    return 200, {'ok': True, 'files': ok, 'skipped': len(skipped), 'skipped_sample': skipped[:8], 'backup': snap}
 
 
 def make_server():
@@ -5550,6 +5719,7 @@ def cmd_serve():
     print('Автоснимок: ' + (f"включён, пауза {c['пауза_часов']} ч, первая проверка через {int(AUTO_FIRST_DELAY)} с" if c['включено'] else 'выключен') + '. Настройки на экране «Данные».')
     threading.Thread(target=auto_loop, daemon=True).start()   # вход по ключу из переменной делает цикл автопилота
     threading.Thread(target=ap_loop, daemon=True).start()
+    threading.Thread(target=backup_loop, daemon=True).start()
     print('Автопилот: ' + ('включён' if ap_read()['enabled'] else 'выключен') + ', первый цикл через 45 с. Отправки сообщений включаются отдельно на вкладке «Автопилот».')
     try:
         srv.serve_forever()
