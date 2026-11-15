@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FunPay Detector 1.0: ЕДИНАЯ программа. Файлы проекта: app.py (весь бэкенд), ui.html (весь интерфейс),
+"""FunPay Detector 1.0: ЕДИНАЯ программа. Файлы проекта: app.py (весь бэкенд), ui.html (весь интерфейс; с 1.18.0 может лежать частями в папке ui/, см. ui_page),
 README.md (карта проекта для людей и агентов: читать первым).
 
 Что это: локальная программа на 127.0.0.1 для продавца FunPay (категория «Прочее GTA 5 RP», lots/1112):
@@ -44,7 +44,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.16.1'
+VERSION = '1.18.0'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -62,6 +62,9 @@ def P(*parts):
 
 # Данные лежат рядом с программой (имена файлов не менялись при объединении: старые данные подхватываются).
 UI_FILE = os.path.join(HERE, 'ui.html')
+UI_DIR = os.path.join(HERE, 'ui')       # 1.18.0: интерфейс из частей (ui/manifest.txt); без папки ui/ отдаётся ui.html (откат)
+_UI_CACHE = {'sig': None, 'body': b'', 'src': ''}
+UI_PART_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]*')
 PAGES = P('pages')                      # сохранённые страницы категории kategoriya_ГГГГ-ММ-ДД[_ЧЧММСС].htm
 PAGES_OWN = P('pages_own')              # диагностика: страницы своего аккаунта без токенов
 OUT_DIR = P('out')                      # отчёт CLI «parse» (CSV по дням)
@@ -705,6 +708,8 @@ def app_data(html):
 def site_request(path, key, data=None, referer=None):
     """GET, а при data POST (dict или список пар). Шлёт golden_key, cookie_prefs=1 и cookie, которые сайт сам
     выдал в ответах (кроме golden_key и fav_games). Возвращает (статус, итоговый адрес, текст)."""
+    if getattr(PRIO, 'low', False):
+        ACC_LOCK.yield_to_high()           # владелец ждёт: уступаем замок между запросами автопилота
     gap = random.uniform(*PACE) - (time.time() - _SITE['last_ts'])
     if gap > 0:
         time.sleep(gap)
@@ -1432,7 +1437,57 @@ ROUTES_DETECTOR = {
 # Правка лота двухшаговая: preview_edit («было → стало», ничего не отправляется) и отдельная кнопка apply_edit.
 # Все запросы к сайту идут через guarded(): один замок, остановка сессии при блокировке/капче/редиректе.
 ACC = {'key': None, 'me': None, 'avatar': None, 'forms': {}, 'pending': None, 'locked': False, 'key_bad': '', 'key_bad_at': 0.0}
-ACC_LOCK = threading.Lock()
+class PrioLock:
+    """Замок запросов аккаунта с приоритетом (1.17.0). Запросы владельца из интерфейса и бота (high) идут раньше
+    фоновых запросов автопилота (low). Автопилот держит замок на весь шаг, поэтому между запросами к сайту он
+    сам уступает его владельцу (yield_to_high), а потом продолжает шаг."""
+    def __init__(self):
+        self._c = threading.Condition(threading.Lock())
+        self._holder = None
+        self._hi_waiting = 0
+
+    def acquire(self, high):
+        with self._c:
+            if high:
+                self._hi_waiting += 1
+            try:
+                while self._holder is not None or (not high and self._hi_waiting):
+                    self._c.wait()
+                self._holder = threading.get_ident()
+            finally:
+                if high:
+                    self._hi_waiting -= 1
+
+    def release(self):
+        with self._c:
+            self._holder = None
+            self._c.notify_all()
+
+    def yield_to_high(self):
+        """Вызывает поток, который держит замок: если владелец ждёт, отдать замок, дождаться очереди и взять снова."""
+        with self._c:
+            if self._holder != threading.get_ident() or not self._hi_waiting:
+                return False
+            self._holder = None
+            self._c.notify_all()
+        self.acquire(False)
+        return True
+
+    def hold(self, low=False):
+        lock = self
+
+        class _Ctx:
+            def __enter__(self_):
+                lock.acquire(not low)
+
+            def __exit__(self_, *exc):
+                lock.release()
+                return False
+        return _Ctx()
+
+
+ACC_LOCK = PrioLock()
+PRIO = threading.local()                # PRIO.low = True только в потоке автопилота
 LOCK_WORDS = ('Сайт ответил HTTP', 'капч', 'перенаправил')
 AMOUNT_FRESH_SEC = 300
 AMOUNTS = {}                        # id лота -> {'a': число строкой, 't': время}  (amounts_cache.json, только числа)
@@ -1459,7 +1514,7 @@ def guarded(fn):
     if ACC['locked']:
         return 409, {'error': 'Сессия остановлена: сайт ответил блокировкой или проверкой. Запросы отключены до перезапуска программы.'}
     try:
-        with ACC_LOCK:
+        with ACC_LOCK.hold(low=getattr(PRIO, 'low', False)):
             return 200, fn()
     except SiteStop as s:
         msg = str(s)
@@ -4256,6 +4311,7 @@ def ap_run_once():
 
 
 def ap_loop():
+    PRIO.low = True                     # запросы этого потока ниже по приоритету, чем запросы владельца
     time.sleep(float(os.environ.get('MARKET_TEST_AP_DELAY', '45')))
     nxt = datetime.datetime.now()
     while True:
@@ -6402,10 +6458,10 @@ ROUTES_STATV1 = {'GET': {}, 'POST': {
 # раз в сутки (auto_), перед каждым импортом (before_import_), по кнопке (manual_). Защита от порчи файлов и
 # неудачного импорта; от потери тома защищает только скачанная копия или бэкап тома в Railway.
 BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
-BACKUP_KEEP = {'auto_': 7, 'manual_': 5, 'before_import_': 3}
+BACKUP_KEEP = {'auto_': 7, 'manual_': 5, 'before_import_': 3, 'before_update_': 3}
 BACKUP_MIN_FREE = 300 * 1024 * 1024
 BACKUP_LOCK = threading.Lock()
-BACKUP_NAME = re.compile(r'(auto|manual|before_import)_[0-9_\-]{8,20}\.zip')
+BACKUP_NAME = re.compile(r'(auto|manual|before_import|before_update)_[0-9_\-]{8,20}\.zip')
 BACKUP_DIRS = ('history', 'reports', 'tickets', 'pages_own', 'out')
 
 
@@ -6748,7 +6804,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Content-Security-Policy',
-                         "default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                         "default-src 'none'; img-src data:; font-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                          "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
@@ -6834,11 +6890,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {'error': 'Недопустимый адрес'})
         u = urlparse(self.path)
         if u.path == '/':
-            try:
-                with open(UI_FILE, 'rb') as f:
-                    return self._send(200, f.read(), 'text/html; charset=utf-8')
-            except OSError:
-                return self._send(500, {'error': 'Рядом с app.py не найден ui.html.'})
+            page, src = ui_page()
+            if page is None:
+                return self._send(500, {'error': src})
+            return self._send(200, page, 'text/html; charset=utf-8')
         if u.path == '/api/export_zip':
             try:
                 return self._export_zip(parse_qs(u.query).get('pages', ['0'])[0] == '1')
@@ -6952,10 +7007,38 @@ def make_server():
 
 
 # ===== 11. Точка входа =================================================================================
+def ui_page():
+    """Страница интерфейса: (байты, источник). Если есть ui/manifest.txt, части склеиваются подряд, байт в байт, в порядке
+    манифеста (строки с # пропускаются; имена только простые, без путей). Любая ошибка сборки (нет части, плохое имя, пустой
+    манифест) пишется в окно/лог, и отдаётся ui.html. Если нет и его, возвращается (None, ошибка)."""
+    man = os.path.join(UI_DIR, 'manifest.txt')
+    if os.path.isfile(man):
+        try:
+            names = [l.strip() for l in open(man, encoding='utf-8') if l.strip() and not l.lstrip().startswith('#')]
+            if not names or any(not UI_PART_RE.fullmatch(n) or '..' in n for n in names):
+                raise ValueError('в manifest.txt пусто или есть недопустимое имя файла')
+            paths = [os.path.join(UI_DIR, n) for n in names]
+            sig = tuple((p, os.path.getmtime(p), os.path.getsize(p)) for p in paths) + (os.path.getmtime(man),)
+            if _UI_CACHE['sig'] != sig:
+                body = b''.join(open(p, 'rb').read() for p in paths)
+                _UI_CACHE.update(sig=sig, body=body, src=f'папка ui/ ({len(names)} частей, {len(body)} Б)')
+                print('Интерфейс собран: ' + _UI_CACHE['src'])
+            return _UI_CACHE['body'], _UI_CACHE['src']
+        except (OSError, ValueError) as e:
+            print(f'ВНИМАНИЕ: интерфейс из папки ui/ не собран ({type(e).__name__}: {e}); отдаю ui.html')
+    try:
+        with open(UI_FILE, 'rb') as f:
+            return f.read(), 'ui.html'
+    except OSError:
+        return None, 'Рядом с app.py не найден ни ui/manifest.txt, ни ui.html.'
+
+
 def cmd_serve():
-    if not os.path.exists(UI_FILE):
-        print('Рядом с app.py не найден ui.html. Положите его в ту же папку.')
+    page, src = ui_page()
+    if page is None:
+        print(src + ' Положите папку ui/ или файл ui.html в папку с программой.')
         return 1
+    print('Интерфейс: ' + src)
     try:
         srv = make_server()
     except OSError as e:
@@ -6979,6 +7062,10 @@ def cmd_serve():
             print(f'Браузер сам не открылся. Откройте вручную адрес: {url}')
     c = auto_read()
     print('Автоснимок: ' + (f"включён, пауза {c['пауза_часов']} ч, первая проверка через {int(AUTO_FIRST_DELAY)} с" if c['включено'] else 'выключен') + '. Настройки на экране «Данные».')
+    try:
+        migrate_1_17_0()
+    except Exception:
+        traceback.print_exc()
     threading.Thread(target=auto_loop, daemon=True).start()   # вход по ключу из переменной делает цикл автопилота
     threading.Thread(target=ap_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
@@ -7000,6 +7087,32 @@ def cmd_serve():
         srv.server_close()
     print('Программа выключена.')
     return 0
+
+
+def migrate_1_17_0():
+    """Один раз: убирает ручную запись «2 награды по 0.5 за 2 отзыва» (1 ₽) из expenses_log.json по решению владельца.
+    Перед этим делает копию before_update_*.zip. Удаляется только запись, совпадающая по сумме, категории и тексту."""
+    marker = P('migration_1_17_0.done')
+    if os.path.exists(marker):
+        return
+    store = read_json(EXPENSES_LOG, {'items': []})
+    items = store.get('items', [])
+    hit = [e for e in items if str(e.get('category')) == 'другое' and abs(float(e.get('amount') or 0) - 1.0) < 1e-9
+           and '2 награды по 0.5' in str(e.get('comment', ''))]
+    if hit:
+        try:
+            snap = backup_make('before_update_')
+        except OSError as e:
+            print(f'Миграция 1.17.0 отложена: не удалось сделать копию ({e}). Ничего не удалено.')
+            return
+        store['items'] = [e for e in items if e not in hit]
+        write_json_atomic(EXPENSES_LOG, store)
+        print(f'Миграция 1.17.0: удалена ручная запись расхода ({len(hit)} шт.), копия перед изменением: {snap or "нет данных для копии"}.')
+    try:
+        with open(marker, 'w', encoding='utf-8') as f:
+            f.write('ok')
+    except OSError:
+        pass
 
 
 def main(argv=None):

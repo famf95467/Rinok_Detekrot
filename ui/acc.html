@@ -1,0 +1,24 @@
+<section id="v-acc" style="display:none">
+<div id="im-box" class="box" style="max-width:540px;display:none"><h3 style="margin-top:0">Импорт данных с ПК</h3>
+<div class="cnt">Один раз после первого запуска: выберите zip из папки программы (json, csv, history, reports, tickets). golden_key.txt пропускается. Совпадающие файлы заменяются. После импорта перезапустите сервис в Railway.</div>
+<div class="bar" style="margin-top:10px"><input type="file" id="im-file" accept=".zip"><button type="button" id="im-go">Загрузить</button></div><div class="cnt" id="im-res"></div></div>
+<div id="sec-box" class="box" style="max-width:760px;display:none"><h3 style="margin-top:0">Защита входа</h3>
+<div class="cnt" id="sec-note"></div>
+<div class="bar" style="margin-top:8px"><button type="button" id="sec-ack">Принято (убрать оповещение)</button><button type="button" id="sec-reload">Обновить</button></div>
+<div class="cnt" id="sec-key"></div><div class="cnt" id="sec-locked"></div><div id="sec-log"></div></div>
+<div id="ac-login" class="box" style="max-width:540px"><h3 style="margin-top:0">Вход в FunPay</h3>
+<div class="cnt">Вставьте cookie golden_key. Он даёт полный доступ к аккаунту, никому его не отправляйте. Ключ хранится только в памяти программы.</div>
+<div style="margin:10px 0"><input type="password" id="ac-key" autocomplete="off" placeholder="golden_key" class="full"></div>
+<label><input type="checkbox" id="ac-rem"> Запомнить в golden_key.txt на этом ПК (простым текстом)</label>
+<div class="bar" style="margin-top:10px"><button type="button" id="ac-btn">Войти</button><button type="button" id="ac-file" style="display:none">Войти по golden_key.txt</button><button type="button" id="ac-forget" style="display:none">Удалить сохранённый ключ</button></div></div>
+<div id="ac-main" style="display:none">
+<div class="bar"><img id="ac-ava" alt="" width="48" height="48" style="border-radius:50%;display:none">
+<div><div class="sv" id="ac-nick"></div><div class="cnt" id="ac-id"></div></div>
+<button type="button" id="ac-reload">Обновить лоты</button><button type="button" id="ac-amt">Узнать количество</button><button type="button" id="ac-out">Выйти</button>
+<input type="text" id="ac-q" placeholder="Поиск по лотам" style="max-width:260px"></div>
+<div class="cnt" id="ac-sum"></div><div id="ac-tbl"></div>
+<div class="box" style="margin-top:12px"><h3 style="margin-top:0">Поднятие предложений</h3>
+<div class="cnt">Один запрос на раздел, как кнопка «Поднять» на сайте. Ответ сайта показывается как есть. Лимит и интервал ставит сам сайт.</div>
+<div class="bar" style="margin-top:8px"><button type="button" id="ac-raiseall">Поднять все разделы</button></div><div id="ac-rlist"></div></div>
+<div id="ac-edit" class="box" style="display:none;margin-top:12px"></div></div></section>
+

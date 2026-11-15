@@ -1,0 +1,15 @@
+--- было/styles.css
++++ стало/styles.css
+@@ -55,0 +56,5 @@
++/* 1.18.0: шрифты. Заголовки Georgia курсивом; Instrument Serif (подмножество «detector», SIL OFL 1.1, см. OFL-InstrumentSerif.txt) только в логотипе */
++@font-face{font-family:"Instrument Serif";font-style:italic;font-weight:400;src:url(data:font/woff;base64,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) format("woff")}
++h1 .lg{font-weight:700}
++h1 .logo{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-style:italic;font-weight:400;font-size:1.3em;letter-spacing:.01em}
++h3{font-family:Georgia,"Times New Roman",serif;font-style:italic;font-weight:600}
+
+--- было/shell_body.html
++++ стало/shell_body.html
+@@ -2 +2 @@
+-<header><h1>FunPay Detector</h1><nav id="nav"></nav>
++<header><h1><span class="lg">FunPay</span> <span class="logo">detector</span></h1><nav id="nav"></nav>
+

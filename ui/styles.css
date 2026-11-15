@@ -1,0 +1,60 @@
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2530;--mut:#68727f;--line:#dde1e7;--acc:#2456a6;
+--s:#1f7a45;--sbg:#e1f3e8;--n:#8a5a00;--nbg:#fbefd2;--x:#a33a3a;--xbg:#f7e3e3}
+@media (prefers-color-scheme:dark){:root{--bg:#161a20;--card:#1f242c;--text:#e6e9ee;--mut:#99a3b0;--line:#323946;--acc:#7fa8e8;
+--s:#7fd3a0;--sbg:#1c3a2a;--n:#e8c070;--nbg:#3b3018;--x:#ee9a9a;--xbg:#3d2323}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,"Segoe UI",Arial,sans-serif}
+header{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0}h3{font-size:15px;margin:16px 0 8px}
+nav{display:flex;gap:6px;flex:1;flex-wrap:wrap}
+.tab{border:0;background:none;padding:6px 12px;border-radius:6px;color:var(--text);font:inherit;cursor:pointer}
+.tab:hover{background:var(--bg)}.tab.cur{background:var(--acc);color:#fff;cursor:default}
+main{padding:16px 20px}
+.bar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+select,button,input[type=number],input[type=text],input[type=password],textarea{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:5px 10px}
+input[type=text],input[type=password],textarea{background:var(--bg)}
+button{cursor:pointer}button:hover{border-color:var(--acc)}button:disabled{opacity:.5;cursor:not-allowed}
+.sum,.cnt{color:var(--mut);font-size:13px}.sum{margin:6px 0 12px;font-size:15px}
+.msg{display:none;padding:9px 12px;border-radius:6px;margin-bottom:10px;background:var(--nbg);color:var(--n)}
+.msg.bad{background:var(--xbg);color:var(--x)}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line)}
+th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{position:sticky;top:0;background:var(--card);font-weight:600;font-size:13px;color:var(--mut)}
+td.num,th.num{text-align:right;white-space:nowrap}td.id{color:var(--mut);font-size:12px}td.btns{white-space:nowrap}
+th.srt{cursor:pointer}
+.b{margin-right:4px;padding:4px 9px}
+.b.on.s{background:var(--sbg);color:var(--s);border-color:var(--s)}.b.on.n{background:var(--nbg);color:var(--n);border-color:var(--n)}.b.on.x{background:var(--xbg);color:var(--x);border-color:var(--x)}
+tr.m-s td{background:var(--sbg)}tr.m-n td{background:var(--nbg)}tr.m-x td{background:var(--xbg);color:var(--mut)}
+.tag{font-size:12px;color:var(--mut);margin-left:6px}
+.empty{padding:22px;text-align:center;color:var(--mut)}
+.boxes{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:14px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.lab{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:10px;margin-bottom:6px;text-transform:uppercase}
+.lab.f{background:var(--sbg);color:var(--s)}.lab.o{background:var(--nbg);color:var(--n)}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:6px}
+.sc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.sl{color:var(--mut);font-size:12px}.sv{font-size:20px;font-weight:700}
+details.more{margin:0 0 12px;color:var(--mut);font-size:14px}details.more summary{cursor:pointer}
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:12px 0}
+.fg{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.fh{font-weight:600;font-size:13px;color:var(--mut);margin-bottom:6px}
+.fg label{display:block;margin:2px 0}.fg .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}.fg .row label{display:inline-block}
+.fg input[type=number]{width:88px}.fg input[type=text]{width:100%;margin-bottom:6px}
+.slist{max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--bg)}
+.seg.cur{background:var(--acc);color:#fff;border-color:var(--acc)}
+.state{padding:12px 14px;border-radius:8px;font-weight:600;margin-bottom:8px}
+.state.ok{background:var(--sbg);color:var(--s)}.state.bad{background:var(--xbg);color:var(--x)}
+.log{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;max-height:260px;overflow:auto;white-space:pre-wrap;font:13px/1.4 Consolas,monospace;margin:0 0 10px}
+.warn{color:var(--x)}a.ol{color:var(--acc);font-weight:600;text-decoration:underline}a.ol:visited{color:var(--acc)}td.id a.ol{font-size:14px}.legend{color:var(--mut);font-size:13px;margin-top:10px}.legend p{margin:3px 0}
+.full{width:100%;margin-bottom:6px}
+.chat{display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:12px}
+.cl{max-height:520px;overflow:auto}.ci{padding:7px 9px;border-bottom:1px solid var(--line);cursor:pointer}.ci:hover,.ci.cur{background:var(--bg)}.ci.un{font-weight:700}
+.hist{max-height:420px;overflow:auto;padding:6px;background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
+.mm{margin:6px 0;padding:6px 10px;border-radius:8px;background:var(--bg);max-width:80%;white-space:pre-wrap}.mm.me{margin-left:auto;background:var(--sbg)}
+.mm small{display:block;color:var(--mut);font-size:11px}
+@media(max-width:760px){.chat{grid-template-columns:1fr}}
+/* 1.18.0: шрифты. Заголовки Georgia курсивом; Instrument Serif (подмножество «detector», SIL OFL 1.1, см. OFL-InstrumentSerif.txt) только в логотипе */
+@font-face{font-family:"Instrument Serif";font-style:italic;font-weight:400;src:url(data:font/woff;base64,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) format("woff")}
+h1 .lg{font-weight:700}
+h1 .logo{font-family:"Instrument Serif",Georgia,"Times New Roman",serif;font-style:italic;font-weight:400;font-size:1.3em;letter-spacing:.01em}
+h3{font-family:Georgia,"Times New Roman",serif;font-style:italic;font-weight:600}
