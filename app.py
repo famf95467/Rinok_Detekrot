@@ -45,7 +45,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.19.1'
+VERSION = '1.19.2'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5373,7 +5373,8 @@ def spy_params(b):
     q = spy_words(b.get('query'))
     if not q:
         return None, 'Название товара: введите хотя бы одно слово (например ChatGPT).'
-    p = {'node': node, 'query': q, 'exclude': spy_words(b.get('exclude')), 'review_key': spy_words(b.get('review_key')) or q[:1]}
+    rk = spy_words(b.get('review_key'))
+    p = {'node': node, 'query': q, 'exclude': spy_words(b.get('exclude')), 'review_key': [] if rk == ['*'] else (rk or q[:1])}   # «*» = считать все отзывы продавца
     for k in ('price_min', 'price_max'):
         v = b.get(k)
         if v in (None, ''):
@@ -5579,6 +5580,16 @@ def spy_profile(uid, pages, note):
     return {'reviews': reviews, 'pages': got, 'cached': False, 'missing': False}
 
 
+def spy_line(detail):
+    """Строка отзыва без цены в конце («ChatGPT, 10 ₽» -> «ChatGPT»): для подсказки, что пишут в отзывах."""
+    return re.sub(r'[,\s]*[\d\s.,]+\s*[₽$€]\s*$', '', detail).strip() or detail
+
+
+def spy_top_lines(profiles, n=8):
+    c = collections.Counter(spy_line(r['detail']) for pr in profiles.values() for r in pr['reviews'] if r['detail'])
+    return c.most_common(n)
+
+
 def spy_score(n, total):
     return round((total + SPY_PRIOR_N * SPY_PRIOR_R) / (n + SPY_PRIOR_N), 2)
 
@@ -5692,6 +5703,11 @@ def spy_run(p):
         result['sellers'] = spy_rank(by, profiles, p['review_key'])
         if profiles and not any(x['seen'] for x in result['sellers']):
             result['notes'].append('Ни у одного продавца на профиле не найдено отзывов: вероятно, разметка профиля другая (см. журнал).')
+        elif result['sellers'] and not any(x['n'] for x in result['sellers']):
+            top = spy_top_lines(profiles)
+            seen = sum(x['seen'] for x in result['sellers'])
+            result['notes'].append(f'Отзывы прочитаны ({seen} шт.), но слова «{" ".join(p["review_key"])}» в строках отзывов нет. Чаще всего там написано: '
+                                   + '; '.join(f'«{t}» ×{k}' for t, k in top) + '. Впишите подходящее слово в поле «Слово в отзывах» или «*» (считать все отзывы продавца).')
     except FetchStop as s:
         if s.code == 2:
             spy_stop_today(s)
