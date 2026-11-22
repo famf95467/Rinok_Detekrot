@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Плагин «Почты SmakMail»: выдача адреса почты покупателю и пересылка magic-link из письма (версия 1.1).
+"""Плагин «Почты SmakMail»: выдача адреса почты покупателю и пересылка magic-link из письма (версия 1.2).
 
 Поток: заказ оплачен -> покупателю в чат уходит адрес свободной почты и инструкция -> покупатель вводит адрес на сайте
 платформы и пишет команду !ссылка -> плагин ждёт письмо по IMAP и отправляет ссылку в чат заказа.
@@ -14,7 +14,10 @@
   - пароли ящиков, токен SmakMail и ссылки не пишутся ни в журнал, ни в ответы API, ни в оповещения, ни в orders.json;
     ссылка живёт только в памяти до отправки в чат;
   - данные лежат в plugins_data/smakmail/ (в резервные копии не входят).
-Файлы в папке данных: mailboxes.txt (СЕКРЕТ: адрес:пароль), smak_token.txt (СЕКРЕТ), pool_state.json, orders.json, settings.json,
+Версия 1.2: у каждого лота своё правило. Пул почт (отдельный список ящиков) и профиль текстов (инструкция, команда,
+шаблон ссылки) назначаются лоту отдельно. Лотам можно назначить один и тот же пул: тогда они делят общий список почт.
+Пул «main» это прежний mailboxes.txt, «стандартный» профиль это прежние тексты из настроек: без новых назначений всё работает как в 1.1.
+Файлы в папке данных: mailboxes.txt (СЕКРЕТ: адрес:пароль; для других пулов mailboxes_<имя>.txt и pool_state_<имя>.json), smak_token.txt (СЕКРЕТ), pool_state.json, orders.json, settings.json,
 lots_cache.json (список ваших лотов), clean_state.json, log.csv.
 """
 import datetime, hashlib, json, os, re, threading, time
@@ -23,7 +26,7 @@ from mailbox_pool import Pool, PoolError, check_mailbox, EMPTY, HAS_MAIL, BAD, U
 import magic_link_auto
 from magic_link_auto import AuthError, LinkTimeout, MagicLinkError, wait_for_magic_link
 
-PLUGIN = {'id': 'smakmail', 'name': 'Почты SmakMail', 'version': '1.1',
+PLUGIN = {'id': 'smakmail', 'name': 'Почты SmakMail', 'version': '1.2',
           'description': 'Выдаёт покупателю адрес почты из вашего пула и присылает в чат ссылку для входа из письма.'}
 
 DEFAULTS = {
@@ -46,7 +49,13 @@ DEFAULTS = {
     'link_text': 'Ваша ссылка для входа: {link}\nОна одноразовая и действует недолго: откройте её сразу.',
     'nolink_text': ('Письмо пока не пришло. Проверьте, что почта введена без ошибок, запросите письмо ещё раз '
                     'и снова напишите {cmd}.'),
+    'pools': ['main'],             # имена пулов почт; main = прежний mailboxes.txt
+    'profiles': {},                # имя профиля -> {поле: значение} (только поля, отличающиеся от стандартных)
+    'lot_rules': {},               # название лота (в нижнем регистре) -> {'pool': имя, 'profile': имя или ''}
 }
+PROFILE_KEYS = ('address_text', 'link_text', 'nolink_text', 'ready_cmd', 'link_pattern')
+POOL_NAME_RE = re.compile(r'[\w-]{1,24}')
+MAX_POOLS, MAX_PROFILES = 20, 20
 TEXT_VARS = {'address_text': ('order', 'email', 'cmd', 'item'), 'link_text': ('order', 'link'), 'nolink_text': ('order', 'cmd')}
 OLD_TEXTS = {    # прежние стандартные тексты (с «готово»): если они так и стоят в настройках, заменяются новыми
     'address_text': ('Здравствуйте! По заказу #{order} ваша почта: {email}\n'
@@ -72,7 +81,6 @@ IMAP_LOG = []                                  # время (monotonic) оцен
 WARNED = {}                                    # ключ предупреждения -> время
 
 A = None                                       # api, ставится в register()
-POOL = None
 
 
 # ---------------------------------------------------------------- хранилище
@@ -107,6 +115,16 @@ def cfg():
         if raw.get(k) == old:
             c[k] = DEFAULTS[k]
     c['link_interval'] = max(15, c['link_interval'])
+    pools = []
+    for n in c['pools']:
+        if isinstance(n, str) and POOL_NAME_RE.fullmatch(n) and n not in pools:
+            pools.append(n)
+    if 'main' in pools:
+        pools.remove('main')
+    c['pools'] = ['main'] + pools
+    c['profiles'] = {n: {k: v for k, v in pr.items() if k in PROFILE_KEYS and isinstance(v, str)}
+                     for n, pr in c['profiles'].items() if isinstance(n, str) and n and isinstance(pr, dict)}
+    c['lot_rules'] = {k: v for k, v in c['lot_rules'].items() if isinstance(k, str) and isinstance(v, dict)}
     return c
 
 
@@ -122,6 +140,19 @@ def is_command(text, cmds):
 
 def norm_title(t):
     return re.sub(r'\s+', ' ', str(t)).strip().casefold()
+
+
+def match_lot(title, lots):
+    """Выбранный лот (из списка настроек), которому соответствует название заказа; None, если ни один. Точное совпадение сильнее."""
+    t = norm_title(title)
+    pairs = [(norm_title(x), x) for x in lots if str(x).strip()]
+    for n, x in pairs:
+        if t == n:
+            return x
+    for n, x in pairs:
+        if min(len(t), len(n)) >= 15 and (n in t or t in n):
+            return x
+    return None
 
 
 def lot_selected(title, lots_norm):
@@ -180,6 +211,38 @@ def get(oid):
     return db()['orders'].get(oid)
 
 
+def rule_for(c, lot):
+    """(пул, профиль) для выбранного лота. Неизвестный пул даёт main, неизвестный профиль даёт стандартный ('')."""
+    r = c['lot_rules'].get(norm_title(lot or ''), {})
+    pn, pr = r.get('pool'), r.get('profile')
+    return (pn if pn in c['pools'] else 'main'), (pr if pr in c['profiles'] else '')
+
+
+def order_lot(o):
+    return o.get('lot') or o.get('title', '')
+
+
+def order_pool(o, c=None):
+    """Пул заказа: тот, из которого уже выдан ящик, иначе по правилу лота."""
+    if o.get('pool') and POOL_NAME_RE.fullmatch(str(o['pool'])):
+        return o['pool']
+    return rule_for(c or cfg(), order_lot(o))[0]
+
+
+def profile_values(c, name):
+    """Тексты профиля: стандартные из настроек, поверх них собственные поля профиля."""
+    v = {k: c[k] for k in PROFILE_KEYS}
+    v.update(c['profiles'].get(name, {}))
+    return v
+
+
+def order_cfg(o, c=None):
+    """Настройки для заказа: общие, а тексты, команда и шаблон ссылки по профилю его лота."""
+    c = dict(c or cfg())
+    c.update(profile_values(c, rule_for(c, order_lot(o))[1]))
+    return c
+
+
 # ---------------------------------------------------------------- пул и токен
 def token():
     t = os.environ.get('SMAK_API_TOKEN', '').strip()
@@ -192,9 +255,26 @@ def token():
         return ''
 
 
-def pool():
-    POOL._token_override = token() or None
-    return POOL
+POOLS = {}
+POOLS_LOCK = threading.Lock()
+
+
+def pool_files(name):
+    if name == 'main':
+        return 'mailboxes.txt', 'pool_state.json'
+    return f'mailboxes_{name}.txt', f'pool_state_{name}.json'
+
+
+def pool(name='main'):
+    if not POOL_NAME_RE.fullmatch(str(name)):
+        raise PoolError('Недопустимое имя пула.')
+    with POOLS_LOCK:
+        P = POOLS.get(name)
+        if P is None:
+            mb, st = pool_files(name)
+            P = POOLS[name] = Pool(token=None, pool_file=_path(mb), state_file=_path(st))
+    P._token_override = token() or None
+    return P
 
 
 def secret_file(name, text):
@@ -265,11 +345,12 @@ def on_orders(rows, now):
             if not oid or oid in d['orders'] or r.get('status') != 'paid':
                 continue
             title = str(r.get('title') or '')
-            if not lot_selected(title, lots):
+            lot = match_lot(title, c['lots'])
+            if not lot:
                 continue
             ts = r.get('ts')
             too_old = ts is None or (now - ts).total_seconds() > c['max_age_hours'] * 3600
-            o = {'id': oid, 'buyer': r.get('buyer') or '', 'title': title[:80], 'price': r.get('price'),
+            o = {'id': oid, 'buyer': r.get('buyer') or '', 'title': title[:80], 'lot': lot[:300], 'price': r.get('price'),
                  'paid_at': ts.isoformat(timespec='minutes') if ts else '', 'found_at': now_iso(),
                  'attempts': 0, 'links_requested': 0, 'link_errors': 0, 'updated': now_iso()}
             if first or gap_long or too_old:
@@ -301,10 +382,10 @@ def hash_text(t):
 
 def issue_address(oid, manual=False):
     """Выдаёт адрес и отправляет его в чат. Возвращает короткий итог для журнала/кнопки."""
-    c = cfg()
     o = get(oid)
     if o is None:
         raise_user('Такого заказа нет в списке плагина.')
+    c = order_cfg(o)
     if not claim(oid, ('new', 'no_mailbox', 'failed', 'skipped', 'unclear') if manual else ('new', 'no_mailbox'), 'new'):
         raise_user('Заказ уже в работе или в другом состоянии: адрес не выдаю.')
     o = get(oid)
@@ -314,8 +395,10 @@ def issue_address(oid, manual=False):
     if not token():
         upd(oid, note='не задан токен SmakMail')
         raise_user('Не задан токен SmakMail.')
+    pname = order_pool(o)
     try:
-        email = pool().take_free(oid)
+        P = pool(pname)
+        email = P.take_free(oid)
         purge_used()                                     # ящики, в которых уже есть письма, убираем из списка
     except PoolError as e:
         upd(oid, note='пул: ' + str(e)[:150])
@@ -323,14 +406,14 @@ def issue_address(oid, manual=False):
         raise_user('Пул почт: ' + str(e))
     if email is None:
         upd(oid, state='no_mailbox', note='свободные почты закончились')
-        warn_once('pool_empty', 'Свободные почты закончились: пополните mailboxes.txt (заказ #' + oid + ' ждёт адрес).', hours=3)
+        warn_once('pool_empty_' + pname, f'Свободные почты закончились в пуле «{pname}»: пополните его список (заказ #' + oid + ' ждёт адрес).', hours=3)
         raise_user('Свободных ящиков нет.')
     state = {'sent_journal': False}
 
     def send():
         node = A.buyer_node(o['buyer'])
         cnt, last, _n = buyer_snapshot(node)
-        upd(oid, state='sending_addr', email=email, base_count=cnt, base_hash=last, note='')
+        upd(oid, state='sending_addr', email=email, pool=pname, base_count=cnt, base_hash=last, note='')
         state['sent_journal'] = True                     # с этого момента исход неясен, если связь оборвётся
         return A.chat_send(node, render(c['address_text'], order=oid, email=email, cmd=commands(c)[0], item=o.get('title', '')))
 
@@ -342,13 +425,13 @@ def issue_address(oid, manual=False):
             A.log(f'заказ #{oid}: исход отправки адреса неясен ({type(e).__name__})', ok=False)
             A.notify(f'заказ #{oid}: адрес мог не дойти (сбой связи). Проверьте чат и нажмите «Выдать адрес» в разделе «Плагины», если его там нет.')
         else:
-            pool().release(oid)
+            P.release(oid)
             n = int(o.get('attempts', 0)) + 1
             upd(oid, state='new' if n < ADDR_RETRIES else 'failed', attempts=n, email='', note='не отправлено: ' + str(e)[:150])
             A.log(f'заказ #{oid}: адрес не отправлен, ящик возвращён ({str(e)[:100]})', ok=False)
         raise_user(str(e))
     if res.get('error_site'):
-        pool().release(oid)
+        P.release(oid)
         n = int(o.get('attempts', 0)) + 1
         upd(oid, state='new' if n < ADDR_RETRIES else 'failed', attempts=n, email='', note='сайт не принял сообщение: ' + res['error_site'][:120])
         A.log(f'заказ #{oid}: сайт не принял сообщение с адресом, ящик возвращён', ok=False)
@@ -361,8 +444,8 @@ def issue_address(oid, manual=False):
 # ---------------------------------------------------------------- «готово» от покупателя
 def check_ready(oid):
     """Смотрит чат заказа: написал ли покупатель после отправки адреса команду (!ссылка). True = можно брать ссылку."""
-    c = cfg()
     o = get(oid)
+    c = order_cfg(o)
     node = A.buyer_node(o['buyer'])
     msgs = A.account(lambda: A.chat_history(node))
     buyer = [m for m in msgs if not m.get('mine')]
@@ -461,19 +544,22 @@ def step_links(c):
 def deliver(oid, c):
     A.as_background()
     try:
-        email = pool().email_for_order(oid)
-        password = pool().password_for(email) if email else None
+        o0 = get(oid)
+        cc = order_cfg(o0, c)
+        P = pool(order_pool(o0, c))
+        email = P.email_for_order(oid)
+        password = P.password_for(email) if email else None
         if not email or not password:
             upd(oid, state='failed', note='для заказа нет ящика или пароля в mailboxes.txt')
             A.notify(f'заказ #{oid}: для ящика не найден пароль в mailboxes.txt.')
             return
         try:
-            link = wait_for_magic_link(email, password, timeout=c['link_timeout'], interval=c['link_interval'], pattern=c['link_pattern'])
+            link = wait_for_magic_link(email, password, timeout=c['link_timeout'], interval=c['link_interval'], pattern=cc['link_pattern'])
         except LinkTimeout:
             upd(oid, state='addr_sent', note='письмо не пришло', ready_checked_at=now_iso(), **_new_baseline(oid))
             A.log(f'заказ #{oid}: письмо не пришло за {c["link_timeout"]} с')
             try:
-                A.account(lambda: A.chat_send(A.buyer_node(get(oid)['buyer']), render(c['nolink_text'], order=oid, cmd=commands(c)[0])))
+                A.account(lambda: A.chat_send(A.buyer_node(get(oid)['buyer']), render(cc['nolink_text'], order=oid, cmd=commands(cc)[0])))
             except Exception as e:
                 A.log(f'заказ #{oid}: сообщение «письмо не пришло» не отправлено ({str(e)[:100]})', ok=False)
             return
@@ -515,12 +601,13 @@ def _new_baseline(oid):
 def send_pending(oid, c):
     link = PENDING_LINKS.get(oid)
     o = get(oid)
+    cc = order_cfg(o, c)
     if not link:
         upd(oid, state='link_lost', note='письмо прочитано, а ссылка не сохранилась (перезапуск?): откройте ящик вручную')
         A.notify(f'заказ #{oid}: ссылка потеряна после перезапуска, письмо уже прочитано. Ящик: {o.get("email", "?")}. Откройте письмо вручную.')
         return
     try:
-        res = A.account(lambda: A.chat_send(A.buyer_node(o['buyer']), render(c['link_text'], order=oid, link=link)))
+        res = A.account(lambda: A.chat_send(A.buyer_node(o['buyer']), render(cc['link_text'], order=oid, link=link)))
         err = res.get('error_site')
     except Exception as e:
         err = str(e)[:120]
@@ -567,20 +654,26 @@ def tick():
         TICK_LOCK.release()
 
 
-def pool_counts():
+def pool_counts(name='main'):
     try:
-        return pool().stats()
+        return pool(name).stats()
     except PoolError:
         return None
 
 
+def used_pools(c):
+    """Пулы, которые назначены выбранным лотам (main, если у лота нет своего правила)."""
+    return {rule_for(c, l)[0] for l in c['lots']}
+
+
 def step_pool_low(c):
-    s = pool_counts()
-    if s is None:
-        return
-    candidates = s['в файле'] - s['issued'] - s['used'] - s['bad']
-    if candidates <= c['pool_low']:
-        warn_once('pool_low', f'Почт в пуле почти не осталось: кандидатов {candidates} (порог {c["pool_low"]}). Пополните mailboxes.txt.', hours=12)
+    for name in sorted(used_pools(c)):
+        s = pool_counts(name)
+        if s is None:
+            continue
+        candidates = s['в файле'] - s['issued'] - s['used'] - s['bad']
+        if candidates <= c['pool_low']:
+            warn_once('pool_low_' + name, f'Почт в пуле «{name}» почти не осталось: кандидатов {candidates} (порог {c["pool_low"]}). Пополните его список.', hours=12)
 
 
 # ---------------------------------------------------------------- панель и действия
@@ -604,30 +697,43 @@ FIELDS = [
 ]
 
 
+MB_HELP = ('По ящику на строку. Пароли на экран не выводятся. Что можно: УДАЛИТЬ ящик (сотрите строку), ДОБАВИТЬ (новая строка адрес:пароль), '
+           'ИЗМЕНИТЬ пароль (допишите после адреса :новый_пароль). Строка с одним адресом оставляет прежний пароль. '
+           'Ящики, уже выданные открытым заказам, удалить нельзя. Ящики, в которых уже есть письма, из списка убираются автоматически '
+           '(при сохранении проверяются новые, до 40 за раз; остальные проверяются при выдаче). Один ящик не может быть сразу в двух пулах.')
+STD_PROFILE = 'стандартный (настройки выше)'
+
+
+def pool_line(s):
+    if s is None:
+        return 'нет списка ящиков'
+    return (f'ящиков {s["в файле"]}; выдано {s["issued"]}, использовано {s["used"]}, неисправно {s["bad"]}; '
+            f'не проверялись {s["не проверялись"]}')
+
+
 def panel():
     c = cfg()
-    s = pool_counts()
     d = db()
     orders = sorted(d['orders'].values(), key=lambda o: o.get('updated', ''), reverse=True)
-    counts = {}
-    for o in orders:
-        counts[o['state']] = counts.get(o['state'], 0) + 1
     warns = []
     if not c['lots']:
         warns.append('Не выбран ни один лот: плагин ничего не делает. Нажмите «Обновить список лотов» и отметьте лоты в настройках.')
     if not token():
         warns.append('Не задан токен SmakMail (переменная SMAK_API_TOKEN или поле ниже).')
-    if s is None:
-        warns.append('Нет файла mailboxes.txt: загрузите ящики (форма ниже).')
+    counts = {n: pool_counts(n) for n in c['pools']}
+    for n in sorted(used_pools(c)):
+        if counts.get(n) is None:
+            warns.append(f'Пул «{n}»: нет списка ящиков. Загрузите ящики в форме «Почты — пул {n}» ниже.')
     if c['link_pattern'] == magic_link_auto.DEFAULT_PATTERN:
-        warns.append('Шаблон ссылки стоит по умолчанию и не сверен с реальным письмом платформы.')
-    stat = [['Токен SmakMail', 'задан' if token() else 'нет'],
-            ['Ящиков в файле', s['в файле'] if s else 0],
-            ['Выдано / использовано / неисправно', f'{s["issued"]} / {s["used"]} / {s["bad"]}' if s else '—'],
-            ['Ещё не проверялись', s['не проверялись'] if s else 0],
-            ['Автовыдача адреса', 'включена' if c['auto_send'] else 'выключена (кнопками)'],
-            ['Автовыдача ссылки', 'включена' if c['auto_link'] else 'выключена (кнопками)'],
-            ['Заказов в списке', len(orders)]]
+        warns.append('Шаблон ссылки (стандартный профиль) стоит по умолчанию и не сверен с реальным письмом платформы.')
+    per_pool = {n: sum(1 for l in c['lots'] if rule_for(c, l)[0] == n) for n in c['pools']}
+    per_prof = {n: sum(1 for l in c['lots'] if rule_for(c, l)[1] == n) for n in c['profiles']}
+    stat = [['Токен SmakMail', 'задан' if token() else 'нет']]
+    for n in c['pools']:
+        stat.append([f'Пул «{n}» (лотов: {per_pool[n]})', pool_line(counts[n])])
+    stat += [['Автовыдача адреса', 'включена' if c['auto_send'] else 'выключена (кнопками)'],
+             ['Автовыдача ссылки', 'включена' if c['auto_link'] else 'выключена (кнопками)'],
+             ['Заказов в списке', len(orders)]]
     rows = []
     for o in orders[:40]:
         b = []
@@ -641,28 +747,94 @@ def panel():
         if st == 'addr_sent':
             b.append({'label': 'Взять ссылку', 'action': 'give_link', 'data': {'id': o['id']},
                       'confirm': f'Ждать письмо и отправить ссылку покупателю по заказу #{o["id"]}? Покупатель уже ввёл адрес на сайте?'})
+        has_box = o.get('email') and st not in ('skipped',)
         rows.append({'cells': ['#' + o['id'], o.get('title', '')[:40], o.get('paid_at', '')[5:16].replace('T', ' '),
-                               o.get('email', '') if st not in ('skipped',) else '', STATES.get(st, st), o.get('note', '')], 'buttons': b})
+                               o.get('email', '') if has_box else '', (o.get('pool') or '') if has_box else '',
+                               STATES.get(st, st), o.get('note', '')], 'buttons': b})
+    pool_opts = [{'v': n, 'l': n} for n in c['pools']]
+    prof_opts = [{'v': '', 'l': STD_PROFILE}] + [{'v': n, 'l': n} for n in sorted(c['profiles'])]
+    rule_rows = []
+    for lot in c['lots']:
+        pn, pr = rule_for(c, lot)
+        rule_rows.append({'cells': [lot[:80],
+                                    {'select': {'options': pool_opts, 'value': pn, 'action': 'set_lot_rule', 'data': {'lot': lot, 'kind': 'pool'}}},
+                                    {'select': {'options': prof_opts, 'value': pr, 'action': 'set_lot_rule', 'data': {'lot': lot, 'kind': 'profile'}}}],
+                          'buttons': []})
+    blocks = []
+    for pn in sorted(c['profiles']):
+        eff = profile_values(c, pn)
+        blocks.append({
+            'title': f'Профиль текстов «{pn}» (лотов: {per_prof[pn]})',
+            'help': 'Поле, которое вы не меняли, совпадает со стандартным (настройки выше) и при его правке тоже меняется. Назначается лоту в таблице «Правила по лотам».',
+            'action': 'save_profile', 'data': {'profile': pn},
+            'fields': [{'key': k, 'label': lb, 'type': tp, 'help': hp, 'min': mn, 'max': mx, 'value': eff[k]}
+                       for k, lb, tp, hp, mn, mx in FIELDS if k in PROFILE_KEYS],
+            'buttons': [{'label': f'Удалить профиль «{pn}»', 'action': 'delete_profile', 'data': {'profile': pn},
+                         'confirm': f'Удалить профиль «{pn}»? Лотам с этим профилем вернётся стандартный.'}]})
+    forms = [
+        {'title': 'Токен SmakMail API', 'help': 'Нужны права mail.read. Токен сохраняется в файл на сервере и обратно на экран не выводится. Если токен попадал в переписку, перевыпустите его.',
+         'action': 'set_token', 'kind': 'secret', 'label': 'Токен', 'button': 'Сохранить токен'},
+        {'title': 'Новый пул почт', 'help': 'Пул это отдельный список ящиков. Лоты с одним и тем же пулом делят этот список между собой; лоты с разными пулами берут почты из разных списков. Имя: буквы, цифры, _ и -, до 24 знаков.',
+         'action': 'add_pool', 'kind': 'text', 'label': 'Имя пула', 'button': 'Создать пул'},
+        {'title': 'Новый профиль текстов', 'help': 'Профиль задаёт инструкцию покупателю, команду и шаблон ссылки для лота. Новый профиль сначала повторяет стандартные тексты. Имя: буквы, цифры, _ и -, до 24 знаков.',
+         'action': 'add_profile', 'kind': 'text', 'label': 'Имя профиля', 'button': 'Создать профиль'}]
+    for i, n in enumerate(c['pools']):
+        forms.append({'title': f'Почты — пул «{n}»', 'kind': 'editor', 'action': 'save_mailboxes', 'data': {'pool': n},
+                      'button': f'Сохранить список пула «{n}»', 'value': '\n'.join(a for a, _p in box_pairs(n)),
+                      'help': MB_HELP if i == 0 else 'Правила те же, что в первом списке: адрес:пароль, по ящику на строку.'})
+    buttons = [{'label': 'Обновить список лотов', 'action': 'refresh_lots', 'data': {}}]
+    for n in c['pools']:
+        buttons.append({'label': f'Убрать ящики с письмами: пул «{n}» (проверить 30)', 'action': 'clean_pool', 'data': {'limit': 30, 'pool': n},
+                        'confirm': f'Проверить до 30 ящиков пула «{n}» по API SmakMail и удалить из списка те, где уже есть письма?'})
+        if n != 'main':
+            buttons.append({'label': f'Удалить пул «{n}»', 'action': 'delete_pool', 'data': {'pool': n},
+                            'confirm': f'Удалить пул «{n}»? Удалится только если он никому не назначен и список ящиков в нём пуст.'})
     return {
         'warnings': warns,
         'status': stat,
         'settings': {'action': 'save_settings', 'fields': [
             dict({'key': k, 'label': lb, 'type': tp, 'help': hp, 'min': mn, 'max': mx, 'value': c[k]},
                  **({'options': lot_options(c)} if tp == 'multi' else {})) for k, lb, tp, hp, mn, mx in FIELDS]},
-        'forms': [
-            {'title': 'Токен SmakMail API', 'help': 'Нужны права mail.read. Токен сохраняется в файл на сервере и обратно на экран не выводится. Если токен попадал в переписку, перевыпустите его.',
-             'action': 'set_token', 'kind': 'secret', 'label': 'Токен', 'button': 'Сохранить токен'},
-            {'title': 'Почты (список)', 'kind': 'editor', 'action': 'save_mailboxes', 'button': 'Сохранить список',
-             'value': '\n'.join(a for a, _p in box_pairs()),
-             'help': ('По ящику на строку. Пароли на экран не выводятся. Что можно: УДАЛИТЬ ящик (сотрите строку), ДОБАВИТЬ (новая строка адрес:пароль), '
-                      'ИЗМЕНИТЬ пароль (допишите после адреса :новый_пароль). Строка с одним адресом оставляет прежний пароль. '
-                      'Ящики, уже выданные открытым заказам, удалить нельзя. Ящики, в которых уже есть письма, из списка убираются автоматически '
-                      '(при сохранении проверяются новые, до 40 за раз; остальные проверяются при выдаче).')}],
-        'buttons': [{'label': 'Обновить список лотов', 'action': 'refresh_lots', 'data': {}},
-                    {'label': 'Убрать из списка ящики с письмами (проверить 30)', 'action': 'clean_pool', 'data': {'limit': 30},
-                     'confirm': 'Проверить до 30 ящиков по API SmakMail и удалить из списка те, где уже есть письма?'}],
-        'tables': [{'title': 'Заказы (последние 40)', 'columns': ['Заказ', 'Лот', 'Оплачен', 'Почта', 'Состояние', 'Примечание'], 'rows': rows}],
+        'blocks': blocks,
+        'forms': forms,
+        'buttons': buttons,
+        'tables': [
+            {'title': 'Правила по лотам: пул почт и профиль текстов (выбор применяется сразу)',
+             'columns': ['Лот', 'Пул почт', 'Профиль текстов'], 'rows': rule_rows},
+            {'title': 'Заказы (последние 40)', 'columns': ['Заказ', 'Лот', 'Оплачен', 'Почта', 'Пул', 'Состояние', 'Примечание'], 'rows': rows}],
     }
+
+
+def clean_text(k, lb, v):
+    """Проверка одного текстового поля (общие настройки и профили). Возвращает очищенное значение или бросает UserError."""
+    v = str(v).strip()
+    if k in TEXT_VARS:
+        v = check_text(k, v)
+    elif k == 'link_pattern':
+        try:
+            re.compile(v)
+        except re.error as e:
+            raise_user(f'Шаблон ссылки не разобран: {e}')
+        if not v or len(v) > 300:
+            raise_user('Шаблон ссылки: от 1 до 300 символов.')
+    elif k == 'ready_cmd':
+        parts = [w.strip() for w in v.split(',') if w.strip()]
+        if not parts:
+            raise_user('Команда: нужна хотя бы одна.')
+        for w in parts:
+            if not w.startswith('!') or len(w) < 2 or len(w) > 30 or ' ' in w:
+                raise_user(f'Команда «{w}»: должна начинаться с «!», без пробелов, до 30 знаков (например !ссылка).')
+        v = ', '.join(parts)
+    elif len(v) > 300:
+        raise_user(f'«{lb}»: не длиннее 300 символов.')
+    return v
+
+
+def save_cfg(c, **changes):
+    """Записывает ВСЕ настройки (api.save_settings заменяет файл целиком), меняя только переданные ключи."""
+    data = {k: c[k] for k in DEFAULTS}
+    data.update(changes)
+    A.save_settings(data)
 
 
 def a_save_settings(b):
@@ -691,29 +863,12 @@ def a_save_settings(b):
                 raise_user(f'«{lb}»: число от {mn} до {mx}.')
             v = int(v)
         else:
-            v = str(v).strip()
-            if k in TEXT_VARS:
-                v = check_text(k, v)
-            elif k == 'link_pattern':
-                try:
-                    re.compile(v)
-                except re.error as e:
-                    raise_user(f'Шаблон ссылки не разобран: {e}')
-                if not v or len(v) > 300:
-                    raise_user('Шаблон ссылки: от 1 до 300 символов.')
-            elif k == 'ready_cmd':
-                parts = [w.strip() for w in v.split(',') if w.strip()]
-                if not parts:
-                    raise_user('Команда: нужна хотя бы одна.')
-                for w in parts:
-                    if not w.startswith('!') or len(w) < 2 or len(w) > 30 or ' ' in w:
-                        raise_user(f'Команда «{w}»: должна начинаться с «!», без пробелов, до 30 знаков (например !ссылка).')
-                v = ', '.join(parts)
-            elif len(v) > 300:
-                raise_user(f'«{lb}»: не длиннее 300 символов.')
+            v = clean_text(k, lb, v)
         new[k] = v
+    for k in ('pools', 'profiles', 'lot_rules'):          # их правят свои действия; здесь сохраняем как есть
+        new[k] = cur[k]
     A.save_settings(new)
-    A.log('настройки изменены: ' + ', '.join(k for k in b if k in new and new[k] != cur[k]) )
+    A.log('настройки изменены: ' + ', '.join(k for k in b if k in new and new[k] != cur[k]))
     return {'ok': True}
 
 
@@ -759,16 +914,16 @@ def a_refresh_lots(b):
     return {'note': f'Лотов на аккаунте: {len(keep)}. Откройте настройки выше и отметьте нужные.'}
 
 
-# ---------------------------------------------------------------- пул почт: список, правка, очистка
-def box_pairs():
+# ---------------------------------------------------------------- пулы почт: список, правка, очистка
+def box_pairs(name='main'):
     try:
-        return pool().read_pool()
+        return pool(name).read_pool()
     except PoolError:
         return []
 
 
-def write_boxes(pairs):
-    p = _path('mailboxes.txt')
+def write_boxes(pairs, name='main'):
+    p = _path(pool_files(name)[0])
     tmp = p + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         f.write(''.join(f'{a}:{pw}\n' for a, pw in pairs))
@@ -779,17 +934,17 @@ def write_boxes(pairs):
     os.replace(tmp, p)
 
 
-def pool_edit(fn):
+def pool_edit(fn, name='main'):
     """fn(state) меняет состояние пула под его замком."""
-    P = pool()
+    P = pool(name)
     with P._lock:
         st = P._load_state()
         fn(st)
         P._save_state(st)
 
 
-def pool_state():
-    P = pool()
+def pool_state(name='main'):
+    P = pool(name)
     with P._lock:
         return P._load_state()
 
@@ -798,36 +953,39 @@ ACTIVE_STATES = ('sending_addr', 'addr_sent', 'link_queue', 'link_working', 'lin
 
 
 def busy_boxes():
-    """Ящики, которые сейчас нужны открытым заказам (удалять их нельзя)."""
+    """Ящики, которые сейчас нужны открытым заказам (удалять их нельзя). Считаются по всем пулам."""
     return {str(o.get('email', '')).lower() for o in db()['orders'].values() if o.get('email') and o['state'] in ACTIVE_STATES}
 
 
-def drop_boxes(addrs):
-    """Убирает ящики из mailboxes.txt и из состояния пула. Выданные открытым заказам не трогает. Возвращает, сколько убрано."""
+def drop_boxes(addrs, name='main'):
+    """Убирает ящики из списка пула и из его состояния. Выданные открытым заказам не трогает. Возвращает, сколько убрано."""
     addrs = {a.lower() for a in addrs}
     with MB_LOCK:
         addrs -= busy_boxes()
         if not addrs:
             return 0
-        pairs = box_pairs()
+        pairs = box_pairs(name)
         keep = [(a, pw) for a, pw in pairs if a not in addrs]
         n = len(pairs) - len(keep)
-        write_boxes(keep)
-        pool_edit(lambda st2: [st2['mailboxes'].pop(a, None) for a in addrs])
+        write_boxes(keep, name)
+        pool_edit(lambda st2: [st2['mailboxes'].pop(a, None) for a in addrs], name)
         return n
 
 
 def purge_used():
-    """Ящики, которые пул пометил «в них есть письма», удаляются из списка совсем."""
-    st = pool_state()
-    used = [a for a, v in st['mailboxes'].items() if v.get('status') == 'used']
-    n = drop_boxes(used) if used else 0
-    if n:
-        A.log(f'из списка убрано ящиков с письмами: {n}')
-    return n
+    """Ящики, которые пул пометил «в них есть письма», удаляются из списка совсем (во всех пулах)."""
+    total = 0
+    for name in cfg()['pools']:
+        st = pool_state(name)
+        used = [a for a, v in st['mailboxes'].items() if v.get('status') == 'used']
+        n = drop_boxes(used, name) if used else 0
+        if n:
+            A.log(f'из пула «{name}» убрано ящиков с письмами: {n}')
+        total += n
+    return total
 
 
-def drop_with_mail(pairs, limit):
+def drop_with_mail(pairs, limit, name='main'):
     """Проверяет ящики по API и удаляет те, где есть письма. Возвращает (убрано, проверено)."""
     tk = token()
     if not tk:
@@ -839,15 +997,28 @@ def drop_with_mail(pairs, limit):
         time.sleep(0.2)
         if r == HAS_MAIL:
             found.append(addr)
-    return (drop_boxes(found) if found else 0), checked
+    return (drop_boxes(found, name) if found else 0), checked
+
+
+def pool_arg(b):
+    name = str(b.get('pool') or 'main')
+    if name not in cfg()['pools']:
+        raise_user(f'Пула «{name}» нет.')
+    return name
 
 
 def a_save_mailboxes(b):
+    name = pool_arg(b)
     text = str(b.get('value', ''))
     with MB_LOCK:
-        old = dict(box_pairs())
+        old = dict(box_pairs(name))
         busy = busy_boxes()
-        new, seen, bad, dup = [], set(), 0, 0
+        elsewhere = {}                                   # ящик -> пул, где он уже лежит (в двух пулах быть нельзя)
+        for other in cfg()['pools']:
+            if other != name:
+                for a, _p in box_pairs(other):
+                    elsewhere[a] = other
+        new, seen, bad, dup, cross = [], set(), 0, 0, []
         for line in text.splitlines():
             line = line.strip()
             if not line or line.startswith('#'):
@@ -856,6 +1027,9 @@ def a_save_mailboxes(b):
             addr, pw = addr.strip().lower(), pw.strip()
             if '@' not in addr or ' ' in addr or ('' == pw and addr not in old):
                 bad += 1
+                continue
+            if addr in elsewhere:
+                cross.append(elsewhere[addr])
                 continue
             if addr in seen:
                 dup += 1
@@ -868,17 +1042,17 @@ def a_save_mailboxes(b):
         added = [(a, pw) for a, pw in new if a not in old]
         changed = [a for a, pw in new if a in old and old[a] != pw]
         removed = [a for a in old if a not in {x for x, _p in new}]
-        write_boxes(new)
+        write_boxes(new, name)
         def fix_state(st):
             for a in removed:
                 st['mailboxes'].pop(a, None)
             for a in changed:
                 if st['mailboxes'].get(a, {}).get('status') == 'bad':
                     st['mailboxes'].pop(a, None)          # пароль исправили: ящик проверится заново
-        pool_edit(fix_state)
-    mail_dropped, checked = drop_with_mail(added, 40)
-    A.log(f'список ящиков: добавлено {len(added)}, изменён пароль у {len(changed)}, удалено {len(removed)}, '
-          f'убрано с письмами {mail_dropped}, неверных строк {bad}, повторов {dup}')
+        pool_edit(fix_state, name)
+    mail_dropped, checked = drop_with_mail(added, 40, name)
+    A.log(f'пул «{name}»: добавлено {len(added)}, изменён пароль у {len(changed)}, удалено {len(removed)}, '
+          f'убрано с письмами {mail_dropped}, неверных строк {bad}, повторов {dup}, уже в другом пуле {len(cross)}')
     parts = [f'добавлено {len(added) - mail_dropped}', f'пароль изменён у {len(changed)}', f'удалено {len(removed)}']
     if mail_dropped:
         parts.append(f'убрано, потому что в них уже есть письма: {mail_dropped}')
@@ -892,27 +1066,143 @@ def a_save_mailboxes(b):
         parts.append(f'неверных строк пропущено: {bad} (новый ящик пишется адрес:пароль)')
     if dup:
         parts.append(f'повторов пропущено: {dup}')
-    return {'note': 'Список сохранён: ' + ', '.join(parts) + '.'}
+    if cross:
+        parts.append(f'пропущено, потому что ящик уже в другом пуле: {len(cross)} (в двух пулах ящик быть не может)')
+    return {'note': f'Пул «{name}», список сохранён: ' + ', '.join(parts) + '.'}
 
 
 def a_clean_pool(b):
     if not token():
         raise_user('Не задан токен SmakMail.')
+    name = pool_arg(b)
     limit = max(1, min(int(b.get('limit', 30) or 30), 60))
-    st = pool_state()
+    st = pool_state(name)
     skip = {a for a, v in st['mailboxes'].items() if v.get('status') in ('issued', 'used', 'bad')}
-    last = _read('clean_state.json', {})
-    cand = [(a, pw) for a, pw in box_pairs() if a not in skip]
+    cs = 'clean_state.json' if name == 'main' else f'clean_state_{name}.json'
+    last = _read(cs, {})
+    cand = [(a, pw) for a, pw in box_pairs(name) if a not in skip]
     cand.sort(key=lambda x: last.get(x[0], ''))              # сначала ещё не проверявшиеся, потом самые давние
     batch = cand[:limit]
-    dropped, checked = drop_with_mail(batch, limit)
+    dropped, checked = drop_with_mail(batch, limit, name)
     stamp = now_iso()
     for a, _pw in batch[:checked]:
         last[a] = stamp
-    alive = {a for a, _p in box_pairs()}
-    _write('clean_state.json', {a: t for a, t in last.items() if a in alive})
-    A.log(f'проверка пула: проверено {checked}, убрано с письмами {dropped}')
-    return {'note': f'Проверено {checked} из {len(cand)} кандидатов, убрано ящиков с письмами: {dropped}.'}
+    alive = {a for a, _p in box_pairs(name)}
+    _write(cs, {a: t for a, t in last.items() if a in alive})
+    A.log(f'проверка пула «{name}»: проверено {checked}, убрано с письмами {dropped}')
+    return {'note': f'Пул «{name}»: проверено {checked} из {len(cand)} кандидатов, убрано ящиков с письмами: {dropped}.'}
+
+
+# ---------------------------------------------------------------- пулы, профили и правила лотов
+def new_name(b, what, existing):
+    n = str(b.get('value', '')).strip()
+    if not POOL_NAME_RE.fullmatch(n):
+        raise_user(f'Имя {what}: от 1 до 24 знаков, только буквы, цифры, _ и -.')
+    if n.casefold() in {x.casefold() for x in existing} or n.casefold() == 'main':
+        raise_user(f'{what.capitalize()} с именем «{n}» уже есть.')
+    return n
+
+
+def a_add_pool(b):
+    c = cfg()
+    if len(c['pools']) >= MAX_POOLS:
+        raise_user(f'Пулов не больше {MAX_POOLS}.')
+    n = new_name(b, 'пула', c['pools'])
+    if not os.path.exists(_path(pool_files(n)[0])):
+        write_boxes([], n)
+    save_cfg(c, pools=c['pools'] + [n])
+    A.log(f'создан пул «{n}»')
+    return {'note': f'Пул «{n}» создан. Загрузите в него ящики (форма «Почты — пул {n}») и назначьте его лотам в таблице правил.'}
+
+
+def a_delete_pool(b):
+    c = cfg()
+    n = str(b.get('pool', ''))
+    if n == 'main':
+        raise_user('Пул main удалить нельзя.')
+    if n not in c['pools']:
+        raise_user(f'Пула «{n}» нет.')
+    lots = [l for l in c['lots'] if rule_for(c, l)[0] == n]
+    if lots:
+        raise_user(f'Пул «{n}» назначен лотам ({len(lots)}). Сначала назначьте этим лотам другой пул.')
+    if any(o.get('pool') == n and o['state'] in ACTIVE_STATES for o in db()['orders'].values()):
+        raise_user(f'В пуле «{n}» есть ящики, выданные открытым заказам. Дождитесь их завершения.')
+    left = len(box_pairs(n))
+    if left:
+        raise_user(f'В пуле «{n}» ещё {left} ящиков. Сотрите их из списка и сохраните его (или перенесите в другой пул), потом удаляйте пул.')
+    rules = {k: v for k, v in c['lot_rules'].items() if v.get('pool') != n}
+    save_cfg(c, pools=[x for x in c['pools'] if x != n], lot_rules=rules)
+    A.log(f'удалён пул «{n}»')
+    return {'note': f'Пул «{n}» удалён.'}
+
+
+def a_add_profile(b):
+    c = cfg()
+    if len(c['profiles']) >= MAX_PROFILES:
+        raise_user(f'Профилей не больше {MAX_PROFILES}.')
+    n = new_name(b, 'профиля', c['profiles'])
+    profiles = dict(c['profiles'])
+    profiles[n] = {}
+    save_cfg(c, profiles=profiles)
+    A.log(f'создан профиль «{n}»')
+    return {'note': f'Профиль «{n}» создан: пока он повторяет стандартные тексты. Измените его ниже и назначьте лотам в таблице правил.'}
+
+
+def a_save_profile(b):
+    c = cfg()
+    n = str(b.get('profile', ''))
+    if n not in c['profiles']:
+        raise_user(f'Профиля «{n}» нет.')
+    labels = {k: lb for k, lb, _tp, _hp, _mn, _mx in FIELDS}
+    old = c['profiles'][n]
+    own = dict(old)
+    for k in PROFILE_KEYS:
+        if k in b:
+            own[k] = clean_text(k, labels[k], b[k])
+    own = {k: v for k, v in own.items() if v != c[k]}      # хранятся только поля, отличающиеся от стандартных
+    profiles = dict(c['profiles'])
+    profiles[n] = own
+    save_cfg(c, profiles=profiles)
+    A.log(f'профиль «{n}» изменён: ' + (', '.join(k for k in PROFILE_KEYS if own.get(k) != old.get(k)) or 'без изменений'))
+    return {'note': f'Профиль «{n}» сохранён.'}
+
+
+def a_delete_profile(b):
+    c = cfg()
+    n = str(b.get('profile', ''))
+    if n not in c['profiles']:
+        raise_user(f'Профиля «{n}» нет.')
+    profiles = {k: v for k, v in c['profiles'].items() if k != n}
+    rules = {}
+    for k, v in c['lot_rules'].items():
+        v = dict(v)
+        if v.get('profile') == n:
+            v['profile'] = ''
+        rules[k] = v
+    save_cfg(c, profiles=profiles, lot_rules=rules)
+    A.log(f'удалён профиль «{n}»')
+    return {'note': f'Профиль «{n}» удалён, его лотам вернулся стандартный.'}
+
+
+def a_set_lot_rule(b):
+    c = cfg()
+    lot, kind, val = str(b.get('lot', '')), str(b.get('kind', '')), str(b.get('value', ''))
+    if norm_title(lot) not in {norm_title(x) for x in c['lots']}:
+        raise_user('Этот лот не выбран в настройках плагина.')
+    if kind == 'pool':
+        if val not in c['pools']:
+            raise_user(f'Пула «{val}» нет.')
+    elif kind == 'profile':
+        if val and val not in c['profiles']:
+            raise_user(f'Профиля «{val}» нет.')
+    else:
+        raise_user('Неизвестное правило.')
+    rules = {k: dict(v) for k, v in c['lot_rules'].items()}
+    r = rules.setdefault(norm_title(lot), {})
+    r[kind] = val
+    save_cfg(c, lot_rules=rules)
+    A.log(f'лот «{lot[:50]}»: {"пул" if kind == "pool" else "профиль"} = {val or "стандартный"}')
+    return {'note': f'Лот «{lot[:50]}»: {"пул" if kind == "pool" else "профиль текстов"} «{val or "стандартный"}».'}
 
 
 def a_give_address(b):
@@ -930,9 +1220,8 @@ def a_give_link(b):
 
 
 def register(api):
-    global A, POOL
+    global A
     A = api
-    POOL = Pool(token=None, pool_file=os.path.join(api.data_dir, 'mailboxes.txt'), state_file=os.path.join(api.data_dir, 'pool_state.json'))
     api.on_orders(on_orders)
     api.every(1, tick, 'выдача адресов и ссылок')
     api.panel(panel)
@@ -943,3 +1232,9 @@ def register(api):
     api.action('clean_pool', a_clean_pool)
     api.action('give_address', a_give_address)
     api.action('give_link', a_give_link)
+    api.action('add_pool', a_add_pool)
+    api.action('delete_pool', a_delete_pool)
+    api.action('add_profile', a_add_profile)
+    api.action('save_profile', a_save_profile)
+    api.action('delete_profile', a_delete_profile)
+    api.action('set_lot_rule', a_set_lot_rule)
