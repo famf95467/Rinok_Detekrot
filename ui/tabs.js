@@ -1,13 +1,14 @@
 /* ---------- вкладки ---------- */
 var nav=$('nav');
-var NAMES={},GOF={};TABS.forEach(function(t){NAMES[t[0]]=t[1];});
+var NAMES={},GOF={home:'Добро пожаловать'};TABS.forEach(function(t){NAMES[t[0]]=t[1];});
+{var hb=el('button','tab',NAMES.home);hb.type='button';hb.id='tab-home';hb.addEventListener('click',function(){show('home');});nav.appendChild(hb);}
 var GROUPS=[['Заказы',['confirm','remind','review','chat']],['Деньги',['stats','sales']],['Лоты',['acc','merge']],['Рынок',['marks','prices','data','hist']],['Система',['auto']]];
 GROUPS.forEach(function(g){nav.appendChild(el('div','gh',g[0]));g[1].forEach(function(id){GOF[id]=g[0];var b=el('button','tab',NAMES[id]);b.type='button';b.id='tab-'+id;b.addEventListener('click',function(){show(id);});nav.appendChild(b);});});
 function show(v){
-  view=v;$('eb').textContent=GOF[v]||'';$('ptitle').textContent=NAMES[v]||'';
+  view=v;document.body.classList.toggle('on-home',v==='home');$('eb').textContent=GOF[v]||'';$('ptitle').textContent=NAMES[v]||'';
   TABS.forEach(function(t){$('v-'+t[0]).style.display=(t[0]===v)?'block':'none';$('tab-'+t[0]).className='tab'+(t[0]===v?' cur':'');});
   $('bar-snap').style.display=(v==='marks'||v==='prices')?'flex':'none';
-  if(v==='prices')loadPrices();if(v==='data')loadData();if(v==='hist')loadHist();if(v==='acc')loadAcc();
+  if(v==='home')homeLoad();if(v==='prices')loadPrices();if(v==='data')loadData();if(v==='hist')loadHist();if(v==='acc')loadAcc();
   if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='auto'){apLoad(true);tgLoad();}if(v==='merge')mgLoad();if(v==='sales')msLoad(true);if(v==='stats')needLogin('st',function(){stReport();sv1All();});
   try{history.replaceState(null,'','#'+v);}catch(e){}
 }

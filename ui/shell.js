@@ -1,9 +1,9 @@
 <script>
 (function(){
 'use strict';
-var TABS=[['marks','Отметки'],['prices','Цены'],['data','Данные'],['hist','История'],['acc','Аккаунт'],['chat','Сообщения'],['remind','Напоминания'],['confirm','Подтверждения'],['review','Отзывы'],['auto','Автопилот'],['stats','Статистика'],['sales','Продажи'],['merge','Слияние лотов']];
+var TABS=[['home','Главная'],['marks','Отметки'],['prices','Цены'],['data','Данные'],['hist','История'],['acc','Аккаунт'],['chat','Сообщения'],['remind','Напоминания'],['confirm','Подтверждения'],['review','Отзывы'],['auto','Автопилот'],['stats','Статистика'],['sales','Продажи'],['merge','Слияние лотов']];
 var MARKS=['скрипт','ниша','нет'],CLS={'скрипт':'s','ниша':'n','нет':'x'};
-var lots=[],filter='none',data={},view='marks',pdata=null,pollT=null;
+var lots=[],filter='none',data={},view='home',pdata=null,pollT=null;
 function $(id){return document.getElementById(id);}
 function say(t,bad){var b=$('msg');b.textContent=t||'';b.className='msg'+(bad?' bad':'');b.style.display=t?'block':'none';}
 function api(url,opts){return fetch(url,opts).then(function(r){return r.json().catch(function(){return {};}).then(function(j){if(!r.ok)throw new Error(j.error||('Ошибка '+r.status));return j;});},function(){throw new Error('Программа не отвечает. Проверьте, что чёрное окно не закрыто.');});}

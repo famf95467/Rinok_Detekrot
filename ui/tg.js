@@ -32,5 +32,5 @@ function autoLogin(){
   }).catch(function(){});
 }
 api('/api/autopilot/status').then(apBanner).catch(function(){});
-load('').then(autoLogin).then(function(){var h=(location.hash||'').replace('#','');var ok=TABS.some(function(t){return t[0]===h;});show(ok?h:'marks');});
+load('').then(autoLogin).then(function(){var h=(location.hash||'').replace('#','');var ok=TABS.some(function(t){return t[0]===h;});show(ok?h:'home');});
 })();

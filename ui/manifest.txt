@@ -3,6 +3,7 @@
 shell_top.html
 styles.css
 shell_body.html
+home.html
 marks.html
 prices.html
 data.html
@@ -34,5 +35,6 @@ merge.js
 sales.js
 tabs.js
 auto.js
+home.js
 tg.js
 shell_tail.html

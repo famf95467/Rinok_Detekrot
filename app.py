@@ -44,7 +44,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.18.0'
+VERSION = '1.18.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
