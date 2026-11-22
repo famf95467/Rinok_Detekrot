@@ -21,6 +21,7 @@ README.md (карта проекта для людей и агентов: чит
   8д. Telegram: оповещения, кнопки, команды, ежедневная сводка (версия 1.16)
   8ж. Шпион: продавцы категории и их отзывы по товару (версия 1.19.0)
   8е. Продажи конкурентов по остатку: опрос категории раз в минуту (версия 1.16.1)
+  12. Плагины: загрузка из папки plugins/, раздел «Плагины» (версия 1.20.0)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
 
@@ -45,7 +46,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.19.4'
+VERSION = '1.20.0'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -2895,6 +2896,10 @@ def conf_sync(rows, now):
         tg_orders_seen(rows, now)                 # раздел 8д: оповещение о новых оплаченных заказах; сбой не должен ломать учёт
     except Exception:
         traceback.print_exc()
+    try:
+        plugins_emit_orders(rows, now)            # раздел 12: включённые плагины видят те же строки заказов (без запросов к сайту)
+    except Exception:
+        traceback.print_exc()
     with CONF_LOCK:
         d = conf_load()
         me = (ACC.get('me') or {}).get('uid')
@@ -4436,6 +4441,7 @@ TG_EVENTS = (('lock', 'Сайт заблокировал сессию (блок�
              ('security', 'Защита входа: блокировка IP, вход с нового IP'),
              ('start', 'Программа запущена (после перезапуска)'),
              ('order', 'Новый оплаченный заказ'),
+             ('plugin', 'Сообщения плагинов'),
              ('summary', 'Ежедневная сводка'))
 TG_COOLDOWN = {'loop': 3600, 'key': 6 * 3600, 'security': 600}   # секунд между одинаковыми оповещениями
 TG_RETRY = (10, 30, 60)                  # повторы отправки при сбое связи, секунд
@@ -7244,12 +7250,295 @@ def h_security_ack(_b=None):
     return 200, {'ok': True}
 
 
+# ===== 12. Плагины (версия 1.20.0) ======================================================================
+# Плагин = папка plugins/<имя>/ рядом с app.py, в ней plugin.py с двумя вещами:
+#     PLUGIN = {'id': 'smakmail', 'name': 'Почты SmakMail', 'version': '1.0', 'description': '...'}
+#     def register(api): ...      # здесь плагин подписывается на события и описывает свою панель
+# Подгрузка: при запуске программа читает plugins/*/plugin.py. Новый плагин = положить папку и перезапустить программу.
+# Раздел «Плагины» показывает найденные плагины, ошибки загрузки, панель каждого плагина (статус, настройки, кнопки, журнал).
+# Плагин включается ОТДЕЛЬНО (по умолчанию выключен: тогда он ничего не делает и не получает событий) и хранит данные в
+# DATA_DIR/plugins_data/<id>/ (эта папка в резервные копии и в zip-импорт НЕ входит: там могут лежать секреты).
+# Что плагину доступно (объект api, ровно эти методы, остальное app.py ему не отдаёт):
+#     api.id, api.data_dir                       папка данных плагина
+#     api.settings() / api.save_settings(dict)   настройки (JSON; секреты сюда не класть)
+#     api.log(text)                              журнал плагина (plugins_data/<id>/log.csv; ссылки, пароли и токены писать нельзя)
+#     api.notify(text)                           оповещение в Telegram (событие «Сообщения плагинов»)
+#     api.on_orders(fn)                          fn(rows, now): новые строки страницы /orders/trade (из conf_sync, без запросов к сайту)
+#     api.every(minutes, fn, name)               фоновое задание, не чаще раза в минуту; запускается только если плагин включён
+#     api.account(fn)                            fn() внутри guarded с низким приоритетом: общий замок, паузы PACE, блокировка при капче
+#     api.chat_send(node, text) / api.chat_history(node) / api.buyer_node(buyer_id)   вызывать только внутри api.account
+#     api.panel(fn) / api.action(name, fn)       панель (fn() -> dict) и кнопки (fn(body) -> dict)
+# Ошибка плагина не должна ронять программу: каждое обращение к плагину обёрнуто в try/except, причина идёт в его журнал.
+PLUGINS_DIR = os.path.join(HERE, 'plugins')
+PLUGINS_DATA = P('plugins_data')
+PL_ID_RE = re.compile(r'[a-z][a-z0-9_]{1,30}')
+PL_ACTION_RE = re.compile(r'[a-z][a-z0-9_]{1,40}')
+PL = {'items': {}, 'errors': [], 'loaded': False}      # id -> Plugin; errors: [{'dir', 'error'}]
+PL_LOCK = threading.RLock()
+
+
+class PluginApi:
+    UserError = UserError                  # плагин бросает её для понятного пользователю отказа (HTTP 400)
+
+    def __init__(self, pid):
+        self.id = pid
+        self.data_dir = os.path.join(PLUGINS_DATA, pid)
+        os.makedirs(self.data_dir, exist_ok=True)
+        self._log_lock = threading.Lock()
+        self.order_handlers, self.jobs, self.actions, self.panel_fn = [], [], {}, None
+
+    # --- настройки и журнал ---
+    def settings(self):
+        d = read_json(os.path.join(self.data_dir, 'settings.json'), {})
+        return d if isinstance(d, dict) else {}
+
+    def save_settings(self, d):
+        if not isinstance(d, dict):
+            raise UserError('Настройки плагина должны быть набором полей.')
+        write_json_atomic(os.path.join(self.data_dir, 'settings.json'), d)
+
+    def log(self, text, ok=True):
+        path = os.path.join(self.data_dir, 'log.csv')
+        with self._log_lock:
+            new = not os.path.exists(path)
+            try:
+                with open(path, 'a', encoding='utf-8-sig', newline='') as fh:
+                    w = csv.writer(fh, delimiter=';')
+                    if new:
+                        w.writerow(['время', 'итог', 'событие'])
+                    w.writerow([datetime.datetime.now().isoformat(timespec='seconds'), 'ок' if ok else 'ошибка', str(text)[:300]])
+            except OSError:
+                pass
+
+    def log_tail(self, n=40):
+        path = os.path.join(self.data_dir, 'log.csv')
+        try:
+            with open(path, encoding='utf-8-sig', newline='') as fh:
+                rows = list(csv.reader(fh, delimiter=';'))[1:]
+        except OSError:
+            return []
+        return [{'time': r[0], 'ok': r[1] == 'ок', 'text': r[2]} for r in rows[-n:] if len(r) >= 3][::-1]
+
+    def notify(self, text):
+        tg_notify('plugin', f'🔌 {PL["items"][self.id].meta["name"]}: {text}', key=f'plugin-{self.id}-{str(text)[:40]}')
+
+    # --- подписки ---
+    def on_orders(self, fn):
+        self.order_handlers.append(fn)
+
+    def every(self, minutes, fn, name):
+        self.jobs.append({'minutes': max(1, float(minutes)), 'fn': fn, 'name': str(name), 'last': 0.0})
+
+    def panel(self, fn):
+        self.panel_fn = fn
+
+    def action(self, name, fn):
+        if not PL_ACTION_RE.fullmatch(name):
+            raise ValueError(f'Недопустимое имя действия: {name}')
+        self.actions[name] = fn
+
+    # --- доступ к аккаунту (только через общий замок и guarded) ---
+    def account(self, fn):
+        """Выполняет fn() как запрос автопилота: общий замок, низкий приоритет, при блокировке сайта сессия блокируется.
+        Возвращает результат fn или бросает UserError с текстом причины. Без входа в аккаунт работать не будет."""
+        if not ACC['key']:
+            raise UserError('Не выполнен вход в аккаунт FunPay.')
+        code, res = guarded(fn)
+        if code != 200:
+            raise UserError((res or {}).get('error') or f'Ошибка {code}')
+        return res
+
+    def as_background(self):
+        """Для потоков, которые плагин запускает сам: запросы аккаунта из них идут с низким приоритетом, как у автопилота."""
+        PRIO.low = True
+
+    def buyer_node(self, buyer_id):
+        if not is_id(str(buyer_id), 15):
+            raise UserError('Неверный ID покупателя.')
+        if not ACC.get('me'):
+            raise UserError('Не выполнен вход в аккаунт FunPay.')
+        me = int(ACC['me']['uid'])
+        return f'users-{min(me, int(buyer_id))}-{max(me, int(buyer_id))}'
+
+    def chat_send(self, node, text):
+        if not re.fullmatch(r'users-\d{1,15}-\d{1,15}', str(node)) or not text or len(text) > MAX_CHAT_TEXT:
+            raise UserError('Сообщение или номер диалога неверны.')
+        return chat_send(str(node), text)
+
+    def chat_history(self, node):
+        """Сообщения диалога (последние 60). Пустой диалог = пустой список; блокировка и капча по-прежнему бросают SiteStop."""
+        try:
+            return chat_history(str(node))['messages']
+        except SiteStop as e:
+            if 'Сообщения в диалоге не найдены' in str(e):
+                return []
+            raise
+
+
+class Plugin:
+    def __init__(self, meta, api):
+        self.meta, self.api = meta, api
+
+    @property
+    def enabled(self):
+        return bool(read_json(PL_STATE, {}).get('enabled', {}).get(self.meta['id']))
+
+
+PL_STATE = P('plugins_state.json')          # какие плагины включены: {'enabled': {id: true}}
+
+
+def pl_set_enabled(pid, on):
+    with PL_LOCK:
+        st = read_json(PL_STATE, {})
+        st.setdefault('enabled', {})[pid] = bool(on)
+        write_json_atomic(PL_STATE, st)
+
+
+def pl_load_all():
+    """Читает plugins/*/plugin.py. Плагин с ошибкой пропускается, причина видна в разделе «Плагины»."""
+    import importlib.util
+    PL['items'].clear()
+    PL['errors'].clear()
+    if not os.path.isdir(PLUGINS_DIR):
+        PL['loaded'] = True
+        return
+    for name in sorted(os.listdir(PLUGINS_DIR)):
+        folder = os.path.join(PLUGINS_DIR, name)
+        entry = os.path.join(folder, 'plugin.py')
+        if not (os.path.isdir(folder) and os.path.isfile(entry)) or name.startswith(('_', '.')):
+            continue
+        try:
+            if folder not in sys.path:
+                sys.path.insert(0, folder)              # плагин может держать свои модули рядом с plugin.py
+            spec = importlib.util.spec_from_file_location('fpplugin_' + re.sub(r'\W', '_', name), entry)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            meta = dict(getattr(mod, 'PLUGIN', None) or {})
+            pid = str(meta.get('id', ''))
+            if not PL_ID_RE.fullmatch(pid) or pid in PL['items']:
+                raise ValueError(f'id плагина «{pid}» не подходит или уже занят (нужно: латиница, цифры, _; от 2 до 31 знака)')
+            meta.setdefault('name', pid)
+            meta.setdefault('version', '?')
+            meta.setdefault('description', '')
+            api = PluginApi(pid)
+            PL['items'][pid] = Plugin(meta, api)
+            mod.register(api)
+        except Exception as e:
+            PL['items'].pop(locals().get('pid', ''), None)
+            PL['errors'].append({'dir': name, 'error': f'{type(e).__name__}: {e}'})
+            traceback.print_exc()
+    PL['loaded'] = True
+    print('Плагины: загружено {}{}.'.format(len(PL['items']), ('; с ошибкой ' + str(len(PL['errors']))) if PL['errors'] else ''))
+
+
+def plugins_emit_orders(rows, now):
+    """Вызывается из conf_sync. Только включённым плагинам; ошибка одного не мешает другим и самому conf_sync."""
+    for p in list(PL['items'].values()):
+        if not p.enabled:
+            continue
+        for fn in p.api.order_handlers:
+            try:
+                fn(rows, now)
+            except Exception as e:
+                p.api.log(f'обработчик заказов упал: {type(e).__name__}: {e}', ok=False)
+                traceback.print_exc()
+
+
+def plugins_loop():
+    PRIO.low = True
+    time.sleep(float(os.environ.get('MARKET_TEST_PLUGINS_DELAY', '60')))
+    while True:
+        try:
+            now = time.time()
+            for p in list(PL['items'].values()):
+                if not p.enabled:
+                    continue
+                for job in p.api.jobs:
+                    if now - job['last'] < job['minutes'] * 60:
+                        continue
+                    job['last'] = now
+                    try:
+                        job['fn']()
+                    except Exception as e:
+                        p.api.log(f'задание «{job["name"]}» упало: {type(e).__name__}: {e}', ok=False)
+                        traceback.print_exc()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(10)
+
+
+def pl_get(pid):
+    p = PL['items'].get(str(pid))
+    if p is None:
+        raise UserError('Такого плагина нет.')
+    return p
+
+
+def h_pl_list(_q=None):
+    items = []
+    for p in PL['items'].values():
+        items.append({'id': p.meta['id'], 'name': p.meta['name'], 'version': p.meta['version'],
+                      'description': p.meta['description'], 'enabled': p.enabled})
+    return 200, {'items': items, 'errors': PL['errors'], 'folder': PLUGINS_DIR, 'logged': bool(ACC['key'])}
+
+
+def h_pl_panel(q):
+    try:
+        p = pl_get(q.get('id', ''))
+    except UserError as e:
+        return 400, {'error': str(e)}
+    panel = {}
+    if p.api.panel_fn:
+        try:
+            panel = p.api.panel_fn() or {}
+        except Exception as e:
+            panel = {'error': f'Панель не построилась: {type(e).__name__}: {e}'}
+            p.api.log(panel['error'], ok=False)
+    return 200, {'id': p.meta['id'], 'name': p.meta['name'], 'enabled': p.enabled, 'panel': panel, 'log': p.api.log_tail()}
+
+
+def h_pl_enable(b):
+    try:
+        p = pl_get(b.get('id', ''))
+    except UserError as e:
+        return 400, {'error': str(e)}
+    if not isinstance(b.get('enabled'), bool):
+        return 400, {'error': 'Нужно да/нет.'}
+    pl_set_enabled(p.meta['id'], b['enabled'])
+    p.api.log('плагин ' + ('включён' if b['enabled'] else 'выключен') + ' пользователем')
+    return 200, {'ok': True}
+
+
+def h_pl_action(b):
+    try:
+        p = pl_get(b.get('id', ''))
+    except UserError as e:
+        return 400, {'error': str(e)}
+    name = str(b.get('action', ''))
+    fn = p.api.actions.get(name)
+    if fn is None:
+        return 400, {'error': 'У плагина нет такого действия.'}
+    try:
+        return 200, fn(b.get('data') if isinstance(b.get('data'), dict) else {}) or {'ok': True}
+    except UserError as e:
+        return 400, {'error': str(e)}
+    except Exception as e:
+        p.api.log(f'действие «{name}» упало: {type(e).__name__}: {e}', ok=False)
+        traceback.print_exc()
+        return 500, {'error': f'{type(e).__name__}: {e}'}
+
+
+ROUTES_PLUGINS = {'GET': {'/api/plugins/list': h_pl_list, '/api/plugins/panel': h_pl_panel},
+                  'POST': {'/api/plugins/enable': h_pl_enable, '/api/plugins/action': h_pl_action}}
+
+
 # ===== 10. HTTP-сервер и таблица маршрутов =============================================================
 # Слушает только 127.0.0.1. Страницу (ui.html) отдаёт с политикой CSP: браузер не даст ей грузить ничего снаружи
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
 # в своём разделе; здесь они склеиваются. Обработчик: функция(body_или_query: dict) -> (HTTP-код, dict).
 ROUTES = {'GET': {}, 'POST': {}}
-for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_MS, ROUTES_SPY, ROUTES_STATS, ROUTES_STATV1):
+for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_MS, ROUTES_SPY, ROUTES_STATS, ROUTES_STATV1, ROUTES_PLUGINS):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
 ROUTES['GET']['/api/backups'] = h_backups_list
@@ -7545,6 +7834,8 @@ def cmd_serve():
     threading.Thread(target=ap_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
     threading.Thread(target=ms_loop, daemon=True).start()   # счёт продаж по остатку (раздел 8е); по умолчанию выключен
+    pl_load_all()                                           # раздел 12: плагины из папки plugins/ (каждый включается отдельно)
+    threading.Thread(target=plugins_loop, daemon=True).start()
     if CLOUD:
         sec_load_events()
         print(f'Защита входа: {SEC_DISTINCT} разных неверных паролей с одного IP за {SEC_WINDOW // 60} мин блокируют IP, журнал: {SEC_LOG}')
