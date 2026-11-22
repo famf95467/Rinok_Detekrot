@@ -4,6 +4,7 @@ shell_top.html
 styles.css
 shell_body.html
 home.html
+spy.html
 marks.html
 prices.html
 data.html
@@ -36,5 +37,6 @@ sales.js
 tabs.js
 auto.js
 home.js
+spy.js
 tg.js
 shell_tail.html
