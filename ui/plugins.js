@@ -28,6 +28,40 @@ function plBtn(id,b){
   x.addEventListener('click',function(){if(b.confirm&&!confirm(b.confirm))return;x.disabled=true;plAct(id,b.action,b.data).then(function(){x.disabled=false;});});
   return x;
 }
+function plMerge(a,b){var o={},k;for(k in a)o[k]=a[k];for(k in b)o[k]=b[k];return o;}
+function plSettings(root,d,st){
+  var bx=el('div','box'),inputs={};
+  if(st.help)bx.appendChild(el('div','cnt',st.help));
+  st.fields.forEach(function(f){
+    var w=el('div');w.style.marginBottom='8px';var i;
+    if(f.type==='bool'){var lb=el('label');i=el('input');i.type='checkbox';i.checked=!!f.value;lb.appendChild(i);lb.appendChild(document.createTextNode(' '+f.label));w.appendChild(lb);}
+    else if(f.type==='multi'){
+      w.appendChild(el('div','fh',f.label));
+      i=el('div','slist');i.style.maxHeight='280px';
+      var chosen=f.value||[],opts=f.options||[];
+      if(!opts.length)i.appendChild(el('div','cnt','Список пуст. Нажмите «Обновить список лотов» (кнопка ниже) и откройте панель заново.'));
+      opts.forEach(function(o){var lb2=el('label');lb2.style.display='block';var cb=el('input');cb.type='checkbox';cb.value=o.v;cb.checked=chosen.indexOf(o.v)>=0;
+        lb2.appendChild(cb);lb2.appendChild(document.createTextNode(' '+o.l));i.appendChild(lb2);});
+      w.appendChild(i);}
+    else{w.appendChild(el('div','fh',f.label));
+      if(f.type==='longtext'){i=el('textarea','full');i.rows=3;i.maxLength=1500;}
+      else if(f.type==='int'){i=el('input');i.type='number';i.min=f.min;i.max=f.max;i.style.width='90px';}
+      else{i=el('input','full');i.type='text';i.maxLength=300;}
+      i.value=f.value;w.appendChild(i);}
+    inputs[f.key]=[i,f.type];
+    if(f.help)w.appendChild(el('div','cnt',f.help));
+    bx.appendChild(w);});
+  var sv=el('button','p','Сохранить настройки');sv.type='button';
+  sv.addEventListener('click',function(){var data={};
+    for(var k in inputs){var t=inputs[k];
+      if(t[1]==='multi')data[k]=Array.prototype.map.call(t[0].querySelectorAll('input:checked'),function(x){return x.value;});
+      else data[k]=t[1]==='bool'?t[0].checked:t[1]==='int'?Number(t[0].value):t[0].value;}
+    plAct(d.id,st.action,plMerge(st.data,data));});
+  bx.appendChild(sv);
+  var bar=el('div','bar');bar.style.marginTop='8px';(st.buttons||[]).forEach(function(b){bar.appendChild(plBtn(d.id,b));});
+  if((st.buttons||[]).length)bx.appendChild(bar);
+  root.appendChild(bx);
+}
 function plPanel(id){
   PLG.cur=id;
   return api('/api/plugins/panel?id='+encodeURIComponent(id)).then(function(d){
@@ -37,36 +71,8 @@ function plPanel(id){
     if(p.error)root.appendChild(el('div','state bad',p.error));
     (p.warnings||[]).forEach(function(w){root.appendChild(el('div','state bad',w));});
     if(p.status){root.appendChild(tbl(['Показатель','Значение'],p.status.map(function(r){return [String(r[0]),String(r[1])];})));}
-    if(p.settings){
-      root.appendChild(el('h3','','Настройки'));
-      var bx=el('div','box'),inputs={};
-      p.settings.fields.forEach(function(f){
-        var w=el('div');w.style.marginBottom='8px';var i;
-        if(f.type==='bool'){var lb=el('label');i=el('input');i.type='checkbox';i.checked=!!f.value;lb.appendChild(i);lb.appendChild(document.createTextNode(' '+f.label));w.appendChild(lb);}
-        else if(f.type==='multi'){
-          w.appendChild(el('div','fh',f.label));
-          i=el('div','slist');i.style.maxHeight='280px';
-          var chosen=f.value||[],opts=f.options||[];
-          if(!opts.length)i.appendChild(el('div','cnt','Список пуст. Нажмите «Обновить список лотов» (кнопка ниже) и откройте панель заново.'));
-          opts.forEach(function(o){var lb2=el('label');lb2.style.display='block';var cb=el('input');cb.type='checkbox';cb.value=o.v;cb.checked=chosen.indexOf(o.v)>=0;
-            lb2.appendChild(cb);lb2.appendChild(document.createTextNode(' '+o.l));i.appendChild(lb2);});
-          w.appendChild(i);}
-        else{w.appendChild(el('div','fh',f.label));
-          if(f.type==='longtext'){i=el('textarea','full');i.rows=3;i.maxLength=1500;}
-          else if(f.type==='int'){i=el('input');i.type='number';i.min=f.min;i.max=f.max;i.style.width='90px';}
-          else{i=el('input','full');i.type='text';i.maxLength=300;}
-          i.value=f.value;w.appendChild(i);}
-        inputs[f.key]=[i,f.type];
-        if(f.help)w.appendChild(el('div','cnt',f.help));
-        bx.appendChild(w);});
-      var sv=el('button','p','Сохранить настройки');sv.type='button';
-      sv.addEventListener('click',function(){var data={};
-        for(var k in inputs){var t=inputs[k];
-          if(t[1]==='multi')data[k]=Array.prototype.map.call(t[0].querySelectorAll('input:checked'),function(x){return x.value;});
-          else data[k]=t[1]==='bool'?t[0].checked:t[1]==='int'?Number(t[0].value):t[0].value;}
-        plAct(d.id,p.settings.action,data);});
-      bx.appendChild(sv);root.appendChild(bx);
-    }
+    if(p.settings){root.appendChild(el('h3','','Настройки'));plSettings(root,d,p.settings);}
+    (p.blocks||[]).forEach(function(bk){root.appendChild(el('h3','',bk.title));plSettings(root,d,bk);});
     (p.forms||[]).forEach(function(f){
       var bx=el('div','box');bx.appendChild(el('div','sv',f.title));if(f.help)bx.appendChild(el('div','cnt',f.help));
       var ed=f.kind==='editor';
@@ -76,15 +82,21 @@ function plPanel(id){
       i.autocomplete='off';if(f.label)i.placeholder=f.label;bx.appendChild(i);
       var b=el('button','',f.button);b.type='button';
       b.addEventListener('click',function(){
-        if(ed){if(!i.value.trim()&&!confirm('Поле пустое: из списка будут удалены ВСЕ ящики (кроме нужных открытым заказам). Продолжить?'))return;plAct(d.id,f.action,{value:i.value});return;}
-        if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,{value:v});});
+        if(ed){if(!i.value.trim()&&!confirm('Поле пустое: из списка будут удалены ВСЕ ящики (кроме нужных открытым заказам). Продолжить?'))return;plAct(d.id,f.action,plMerge(f.data,{value:i.value}));return;}
+        if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,plMerge(f.data,{value:v}));});
       bx.appendChild(b);root.appendChild(bx);});
     if((p.buttons||[]).length){var bar=el('div','bar');p.buttons.forEach(function(b){bar.appendChild(plBtn(d.id,b));});root.appendChild(bar);}
     (p.tables||[]).forEach(function(t){
       root.appendChild(el('h3','',t.title));
       if(!t.rows.length){root.appendChild(el('div','empty','Пока пусто.'));return;}
       var tb=el('table'),th=el('thead'),hr=el('tr');t.columns.concat(['']).forEach(function(c){hr.appendChild(el('th','',c));});th.appendChild(hr);tb.appendChild(th);
-      var bd=el('tbody');t.rows.forEach(function(r){var tr=el('tr');r.cells.forEach(function(c){tr.appendChild(el('td','',String(c)));});
+      var bd=el('tbody');t.rows.forEach(function(r){var tr=el('tr');r.cells.forEach(function(c){
+          if(c&&typeof c==='object'&&c.select){
+            var td0=el('td'),sl=el('select'),cs=c.select;
+            cs.options.forEach(function(o){var op=el('option','',o.l);op.value=o.v;if(o.v===cs.value)op.selected=true;sl.appendChild(op);});
+            sl.addEventListener('change',function(){sl.disabled=true;plAct(d.id,cs.action,plMerge(cs.data,{value:sl.value})).then(function(){sl.disabled=false;});});
+            td0.appendChild(sl);tr.appendChild(td0);}
+          else tr.appendChild(el('td','',String(c)));});
         var td=el('td');r.buttons.forEach(function(b){td.appendChild(plBtn(d.id,b));});tr.appendChild(td);bd.appendChild(tr);});
       tb.appendChild(bd);root.appendChild(tb);});
     root.appendChild(el('h3','','Журнал плагина'));
