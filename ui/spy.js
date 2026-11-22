@@ -1,10 +1,11 @@
 /* ---------- Шпион ---------- */
 /* Запускает фоновую задачу на сервере (/api/spy/*) и показывает продавцов с отзывами по товару, лучшие первыми. Ничего не пишет на сайт. */
-var SP={res:null,timer:null,busy:false};
+var SP={res:null,timer:null,busy:false,filled:false};
 function spUrl(p){return 'https://funpay.com'+p;}
 function spLink(path,text,cls){var a=el('a',cls||'ol',text);a.href=spUrl(path);a.target='_blank';a.rel='noopener noreferrer';return a;}
 function spFill(res){
-  if(!res||!res.params)return;var p=res.params;
+  /* Один раз за открытие страницы, пока пользователь ничего не вводил: иначе стёртые поля возвращались бы после каждого опроса статуса. */
+  if(SP.filled||!res||!res.params)return;SP.filled=true;var p=res.params;
   function set(id,v){var e=$(id);if(e&&!e.value&&v!==null&&v!==undefined&&v!=='')e.value=v;}
   set('spy-cat',p.node);set('spy-q',p.query);set('spy-ex',p.exclude);set('spy-key',p.review_key);set('spy-pmin',p.price_min);if(p.sort)$('spy-order').value=p.sort;set('spy-lots',p.lots_limit);set('spy-pmax',p.price_max);
 }
@@ -79,6 +80,7 @@ function spPoll(){
 }
 function spyLoad(){return spPoll();}
 $('spy-go').addEventListener('click',function(){
+  SP.filled=true;
   var b=spBody(),n=Math.max(1,Math.min(40,Number(b.max_sellers)||15));
   if(!confirm('Запустить шпиона? Будет 1 запрос страницы категории и до '+n+' запросов профилей продавцов'+(b.review_pages>1?' (плюс подгрузка отзывов)':'')+', с паузами 2,5–5 с, как гость. Профили из кэша (до 6 ч) не запрашиваются.'))return;
   say('');

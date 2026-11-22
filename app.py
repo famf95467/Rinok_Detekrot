@@ -45,7 +45,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.19.2'
+VERSION = '1.19.3'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5374,7 +5374,7 @@ def spy_params(b):
     if not q:
         return None, 'Название товара: введите хотя бы одно слово (например ChatGPT).'
     rk = spy_words(b.get('review_key'))
-    p = {'node': node, 'query': q, 'exclude': spy_words(b.get('exclude')), 'review_key': [] if rk == ['*'] else (rk or q[:1])}   # «*» = считать все отзывы продавца
+    p = {'node': node, 'query': q, 'exclude': spy_words(b.get('exclude')), 'review_key': [] if (not rk or rk == ['*']) else rk}   # пусто или «*» = считать все отзывы продавца
     for k in ('price_min', 'price_max'):
         v = b.get(k)
         if v in (None, ''):
