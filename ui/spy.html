@@ -1,0 +1,26 @@
+<section id="v-spy" style="display:none">
+<div class="state" id="spy-state" style="display:none"></div>
+<div class="box"><div class="bar">
+<label>Категория (№ или ссылка): <input type="text" id="spy-cat" placeholder="1112 или funpay.com/lots/1112/" style="width:250px"></label>
+<label>Название товара: <input type="text" id="spy-q" placeholder="ChatGPT" style="width:200px"></label>
+<label>Исключить слова: <input type="text" id="spy-ex" placeholder="необязательно" style="width:170px"></label></div>
+<div class="bar">
+<label>Какие лоты смотреть: <select id="spy-order"><option value="popular">Популярные (как на сайте по умолчанию)</option><option value="cheap">Сначала дешёвые (стрелка вверх)</option><option value="expensive">Сначала дорогие (стрелка вниз)</option></select></label>
+<label>Сколько лотов смотреть: <input type="number" id="spy-lots" min="1" max="2000" value="100" style="width:90px"></label></div>
+<div class="bar">
+<label>Цена от, ₽: <input type="number" id="spy-pmin" min="0" style="width:90px"></label>
+<label>до, ₽: <input type="number" id="spy-pmax" min="0" style="width:90px"></label>
+<label>Слово в отзывах: <input type="text" id="spy-key" placeholder="как первое слово названия" style="width:190px"></label>
+<label>Продавцов проверить: <input type="number" id="spy-ms" min="1" max="40" value="15" style="width:70px"></label>
+<label>Страниц отзывов: <select id="spy-pg"><option value="1">1 (последние на профиле)</option><option value="2">2 (экспериментально)</option><option value="3">3 (экспериментально)</option><option value="4">4 (экспериментально)</option></select></label></div>
+<div class="bar"><button type="button" id="spy-go" class="p">Запустить шпиона</button><button type="button" id="spy-stop" style="display:none">Остановить</button><button type="button" id="spy-csv" style="display:none">Сохранить таблицу в CSV</button><span class="cnt" id="spy-prog"></span></div></div>
+<div id="spy-notes"></div>
+<div class="summary" id="spy-cards"></div>
+<div class="bar" id="spy-sbar" style="display:none"><label>Сортировка: <select id="spy-sort"><option value="score">по баллу (лучшие первыми)</option><option value="n">по числу отзывов на товар</option><option value="avg">по средней оценке</option><option value="price">по цене лота (дешёвые первыми)</option></select></label>
+<label><input type="checkbox" id="spy-zero"> показывать продавцов без отзывов по товару</label></div>
+<div id="spy-list"></div>
+<details class="more"><summary>Журнал последнего запуска</summary><pre class="log" id="spy-log"></pre></details>
+<div class="legend"><p><b>Как работает.</b> Один гостевой запрос страницы категории, отбор лотов по словам названия и цене, порядок «популярные / дешёвые / дорогие» и первые N лотов, затем по одному запросу профиля каждого продавца (пауза 2,5–5 с). Из отзывов берутся те, где в строке «название, цена» есть слово из поля «Слово в отзывах». Без входа в аккаунт, без обхода: блокировка, капча, редирект или ошибка 401/403/429 останавливают работу до конца дня, частичный результат остаётся.</p>
+<p><b>По факту:</b> число отзывов по товару, средняя, доля 5★, плохие (1–2★), дата последнего. Считаются только просмотренные отзывы (обычно последние на странице профиля), поэтому у давних продавцов число занижено. <b>Моя оценка:</b> «балл» = (сумма звёзд + 3·4,0) / (число + 3): один отзыв на 5★ не обгоняет 20 на 4,9.</p>
+<p>Профили запоминаются на 6 часов: повторный запуск по тем же продавцам не шлёт новых запросов. Ники покупателей не читаются и не сохраняются. Правила площадки проверяйте сами.</p></div>
+</section>

@@ -19,6 +19,7 @@ README.md (карта проекта для людей и агентов: чит
    9. Статистика                                            (бывш. stats_tab.py)
   9б. Статистика v1: награды, расходы, метрики по ID лота, подсказки, отчёт
   8д. Telegram: оповещения, кнопки, команды, ежедневная сводка (версия 1.16)
+  8ж. Шпион: продавцы категории и их отзывы по товару (версия 1.19.0)
   8е. Продажи конкурентов по остатку: опрос категории раз в минуту (версия 1.16.1)
   10. HTTP-сервер и таблица маршрутов
   11. Точка входа: serve (по умолчанию) | fetch | parse
@@ -44,7 +45,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.18.1'
+VERSION = '1.19.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5323,6 +5324,454 @@ def h_ms_settings(b):
 ROUTES_MS = {'GET': {'/api/ms/status': ms_status, '/api/ms/report': ms_report}, 'POST': {'/api/ms/settings': h_ms_settings}}
 
 
+# ===== 8ж. Шпион: продавцы категории и их отзывы по товару (версия 1.19.0) =================================================
+# По кнопке (сам не запускается): 1) один гостевой запрос страницы категории; 2) отбор лотов по словам в названии и цене;
+# 3) для каждого продавца отобранных лотов (не больше max_sellers) гостевой запрос его профиля /users/ID/ с паузой 2.5-5 с;
+# 4) из отзывов на профиле берутся те, где в строке «название, цена» есть слово товара (review_key), считаются число, средняя
+# оценка, доля 5★, плохие (1-2★), дата последнего; 5) продавцы сортируются от лучших к худшим и выдаются со ссылками на лоты.
+# Правила те же, что у загрузчика (раздел 3): без входа в аккаунт, без cookie (кроме валюты), без параллельных запросов, без обхода.
+# Блокировка, капча, редирект, HTTP 401/403/429/5xx: работа останавливается, частичный результат остаётся, сегодняшний день
+# помечается остановленным в общем fetch_state.json (загрузчик и счёт продаж тоже не пойдут), повторов нет.
+# Профили кэшируются на SPY_TTL секунд (spy_cache.json): повторный запуск с теми же продавцами не делает новых запросов.
+# В кэш и результат попадают только оценка, строка «название, цена», дата и номер заказа; ники покупателей не читаются и не пишутся.
+# Оценка продавца: по факту: число отзывов по товару, средняя, доля 5★ (только среди просмотренных отзывов: обычно последние
+# на странице профиля). Моя оценка: «балл» = (сумма звёзд + 3*4.0) / (число + 3), чтобы 1 отзыв на 5★ не обгонял 20 отзывов на 4.9.
+SPY_CACHE = P('spy_cache.json')
+SPY_LAST = P('spy_last.json')
+SPY_TTL = float(os.environ.get('MARKET_TEST_SPY_TTL', str(6 * 3600)))
+SPY_PAUSE = (2.5, 5.0)
+SPY_MAX_SELLERS = 40
+SPY_MAX_LOTS = 2000
+SPY_SORTS = ('popular', 'cheap', 'expensive')     # как на сайте: без сортировки (порядок страницы), стрелка вверх (дешевле), вниз (дороже)
+SPY_MAX_PAGES = 4
+SPY_PRIOR_N, SPY_PRIOR_R = 3, 4.0
+SPY_LOCK = threading.Lock()
+SPY = {'running': False, 'cancel': False, 'stage': '', 'done': 0, 'total': 0, 'log': [], 'err': '', 'stopped': '',
+       'started': '', 'ended': '', 'result': None}
+
+
+def spy_log(t):
+    SPY['log'].append(datetime.datetime.now().strftime('%H:%M:%S') + ' ' + t)
+    del SPY['log'][:-60]
+
+
+def spy_words(s):
+    return [w for w in re.split(r'\s+', str(s or '').casefold().strip()) if w]
+
+
+def spy_node(v):
+    s = str(v or '').strip()
+    m = re.search(r'/lots/(\d{1,8})', s) or re.fullmatch(r'()(\d{1,8})', s)
+    return int(m.group(m.lastindex)) if m else None
+
+
+def spy_params(b):
+    """Проверка полей формы. Возвращает (параметры, текст ошибки)."""
+    node = spy_node(b.get('category'))
+    if not node:
+        return None, 'Категория: номер (например 1112) или ссылка вида funpay.com/lots/1112/.'
+    q = spy_words(b.get('query'))
+    if not q:
+        return None, 'Название товара: введите хотя бы одно слово (например ChatGPT).'
+    p = {'node': node, 'query': q, 'exclude': spy_words(b.get('exclude')), 'review_key': spy_words(b.get('review_key')) or q[:1]}
+    for k in ('price_min', 'price_max'):
+        v = b.get(k)
+        if v in (None, ''):
+            p[k] = None
+            continue
+        try:
+            p[k] = float(str(v).replace(',', '.'))
+        except ValueError:
+            return None, 'Цена: нужно число.'
+        if not 0 <= p[k] <= 10 ** 7:
+            return None, 'Цена вне допустимых пределов.'
+    if p['price_min'] is not None and p['price_max'] is not None and p['price_min'] > p['price_max']:
+        return None, 'Цена «от» больше цены «до».'
+    p['sort'] = str(b.get('sort') or 'popular')
+    if p['sort'] not in SPY_SORTS:
+        return None, 'Какие лоты смотреть: популярные, сначала дешёвые или сначала дорогие.'
+    for k, lo, hi, dflt in (('lots_limit', 1, SPY_MAX_LOTS, 100), ('max_sellers', 1, SPY_MAX_SELLERS, 15), ('review_pages', 1, SPY_MAX_PAGES, 1)):
+        v = b.get(k, dflt)
+        if v in (None, ''):
+            v = dflt
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)) or not re.fullmatch(r'\d{1,3}', str(v).split('.')[0]) or not lo <= int(float(v)) <= hi:
+            return None, f'Поле {k}: число от {lo} до {hi}.'
+        p[k] = int(float(v))
+    return p, ''
+
+
+def spy_parse_lots(text):
+    """Лоты страницы категории: id, название, цена, продавец, id продавца (из ссылки /users/ID/ внутри блока лота), автовыдача."""
+    soup = BeautifulSoup(text, 'html.parser')
+    out, seen = [], set()
+    for a in soup.select('a.tc-item'):
+        lid = (a.get('href') or '').split('id=')[-1]
+        if not is_id(lid, 12) or lid in seen:
+            continue
+        seen.add(lid)
+        price, seller, title = a.select_one('.tc-price'), a.select_one('.media-user-name'), a.select_one('.tc-desc-text')
+        m = re.search(r'/users/(\d{1,12})', str(a))
+        try:
+            pv = round(float(price['data-s']), 2) if price is not None and price.get('data-s') else None
+        except ValueError:
+            pv = None
+        rc = a.select_one('.rating-mini-count')
+        digits = re.sub(r'\D', '', rc.get_text()) if rc else ''
+        out.append({'id': lid, 'title': title.get_text(' ', strip=True) if title else '', 'price': pv,
+                    'seller': seller.get_text(strip=True) if seller else '', 'uid': m.group(1) if m else '',
+                    'auto': bool(a.get('data-auto')), 'reviews': int(digits) if digits else 0})
+    return out
+
+
+def spy_select(lots, p):
+    """Отбор лотов: все слова запроса в названии, ни одного исключённого, цена в границах."""
+    out = []
+    for l in lots:
+        t = l['title'].casefold()
+        if not all(w in t for w in p['query']) or any(w in t for w in p['exclude']):
+            continue
+        if l['price'] is None:
+            continue
+        if p['price_min'] is not None and l['price'] < p['price_min']:
+            continue
+        if p['price_max'] is not None and l['price'] > p['price_max']:
+            continue
+        out.append(l)
+    return out
+
+
+def spy_pick(sel, sort, limit):
+    """Порядок и число лотов. popular: порядок страницы (по умолчанию на сайте идут популярные); cheap/expensive: по цене.
+    Сортировка устойчивая: при равной цене сохраняется порядок страницы. Берутся первые limit лотов."""
+    a = list(sel)
+    if sort == 'cheap':
+        a.sort(key=lambda l: l['price'])
+    elif sort == 'expensive':
+        a.sort(key=lambda l: -l['price'])
+    return a[:limit]
+
+
+def spy_parse_reviews(text):
+    """Отзывы со страницы профиля (или с подгруженного куска): [{'rating', 'detail', 'when', 'order', 'text'}]. Покупатели не читаются."""
+    soup = BeautifulSoup(text, 'html.parser')
+    out = []
+    for it in soup.select('.review-item'):
+        det = it.select_one('.review-item-detail')
+        detail = det.get_text(' ', strip=True) if det else ''
+        rating = None
+        for n in it.select('.rating [class*=rating], .rating'):
+            m = re.search(r'(?:^|\s)rating([1-5])(?:\s|$)', ' '.join(n.get('class', [])))
+            if m:
+                rating = int(m.group(1))
+                break
+        if rating is None:
+            m = re.search(r'class="[^"]*\brating([1-5])\b', str(it))
+            rating = int(m.group(1)) if m else None
+        od, dt, tx = it.select_one('.review-item-order'), it.select_one('.review-item-date'), it.select_one('.review-item-text')
+        mo = re.search(r'#\s*([A-Z0-9]{4,12})', od.get_text(' ', strip=True)) if od else None
+        out.append({'rating': rating, 'detail': detail[:120], 'when': dt.get_text(' ', strip=True)[:60] if dt else '',
+                    'order': mo.group(1) if mo else '', 'text': tx.get_text(' ', strip=True)[:160] if tx else ''})
+    return out
+
+
+def spy_more_form(text):
+    """Скрытые поля подгрузки отзывов (user_id, continue), если они есть на странице. Иначе None."""
+    soup = BeautifulSoup(text, 'html.parser')
+    uid, cont = soup.select_one('input[name=user_id]'), soup.select_one('input[name=continue]')
+    if uid is None or cont is None or not cont.get('value'):
+        return None
+    return {'user_id': uid.get('value', ''), 'continue': cont.get('value', '')}
+
+
+def spy_post(path, fields):
+    """Один гостевой POST (подгрузка отзывов, как делает кнопка на странице). Без cookie. Возвращает (статус, итоговый адрес, тело)."""
+    data = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(SITE_BASE + path, data=data, method='POST', headers={
+        'User-Agent': UA_GUEST, 'Accept': 'application/json, text/html;q=0.9,*/*;q=0.5', 'Accept-Language': 'ru-RU,ru;q=0.9',
+        'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Accept-Encoding': 'gzip'})
+    try:
+        resp = urllib.request.build_opener().open(req, timeout=TIMEOUT)
+        status, final, hdr = resp.status, resp.geturl(), resp.headers
+    except urllib.error.HTTPError as e:
+        resp, status, final, hdr = e, e.code, e.geturl(), e.headers
+    body = resp.read(5 * 1024 * 1024)
+    if hdr.get('Content-Encoding', '').lower() == 'gzip':
+        try:
+            body = gzip.decompress(body)
+        except OSError:
+            pass
+    return status, final, body
+
+
+def spy_check(status, final, body, path):
+    """Общие проверки ответа: блокировка/редирект/капча останавливают (код 2), прочие ошибки (код 4). 404: возвращает False."""
+    if status == 404:
+        return False
+    if status in BLOCK_STATUSES:
+        raise FetchStop(2, f'Сайт отвечает HTTP {status}', 'Похоже на блокировку, лимит запросов или защиту.', body)
+    if status != 200:
+        raise FetchStop(4, f'Неожиданный ответ HTTP {status}', 'Страница не отдана.', body)
+    if urlparse(final).path.rstrip('/') != path.rstrip('/'):
+        raise FetchStop(2, 'Сайт перенаправил на другой адрес', f'Вместо {path} пришёл {final} (вход, капча или защита).', body)
+    return True
+
+
+def spy_more_html(body):
+    """Ответ подгрузки: JSON с html-куском или сразу html. Возвращает html-текст."""
+    t = body.decode('utf-8', 'replace')
+    if t.lstrip().startswith('{'):
+        try:
+            j = json.loads(t)
+            for k in ('html', 'content', 'data'):
+                if isinstance(j.get(k), str):
+                    return j[k]
+        except ValueError:
+            pass
+    return t
+
+
+def spy_profile(uid, pages, note):
+    """Отзывы продавца: из кэша или с сайта. Возвращает {'reviews': [...], 'pages': n, 'cached': bool, 'missing': bool}."""
+    with SPY_LOCK:
+        cache = read_json(SPY_CACHE, {})
+    c = cache.get(uid)
+    if c and time.time() - c.get('at', 0) < SPY_TTL and c.get('pages', 1) >= pages:
+        return {'reviews': c['reviews'], 'pages': c['pages'], 'cached': True, 'missing': False}
+    path = f'/users/{uid}/'
+    status, final, body = http_get(SITE_BASE + path, CURRENCY_COOKIES['rub'])
+    if not spy_check(status, final, body, path):
+        return {'reviews': [], 'pages': 0, 'cached': False, 'missing': True}
+    text = body.decode('utf-8', 'replace')
+    reviews = spy_parse_reviews(text)
+    if not reviews and re.search(CAPTCHA_MARKERS, text[:300000], re.I):
+        raise FetchStop(2, 'Сайт показывает капчу или проверку браузера', 'Шпион её не обходит.', body)
+    if not reviews and not note.get('diag'):
+        note['diag'] = True
+        try:
+            os.makedirs(PAGES, exist_ok=True)
+            with open(os.path.join(PAGES, f'_spy_profile_{uid}.html'), 'wb') as f:
+                f.write(body[:500000])
+            spy_log(f'У продавца {uid} отзывов на странице не найдено: страница сохранена в pages/_spy_profile_{uid}.html. Если отзывы там есть, разметка другая: пришлите файл.')
+        except OSError:
+            pass
+    got = 1
+    form = spy_more_form(text) if pages > 1 else None
+    while form and got < pages and not SPY['cancel']:
+        pause(*SPY_PAUSE)
+        s2, f2, b2 = spy_post('/users/reviews', form)
+        if not spy_check(s2, f2, b2, '/users/reviews'):
+            break
+        more_html = spy_more_html(b2)
+        more = spy_parse_reviews(more_html)
+        if not more:
+            spy_log(f'Продавец {uid}: подгрузка отзывов не вернула отзывов, остановился на {got} стр.')
+            break
+        reviews += more
+        got += 1
+        form = spy_more_form(more_html)
+    with SPY_LOCK:
+        cache = read_json(SPY_CACHE, {})
+        cache[uid] = {'at': time.time(), 'pages': got, 'reviews': reviews[:400]}
+        for k in sorted(cache, key=lambda k: cache[k].get('at', 0))[:-300]:
+            del cache[k]
+        write_json_atomic(SPY_CACHE, cache)
+    return {'reviews': reviews, 'pages': got, 'cached': False, 'missing': False}
+
+
+def spy_score(n, total):
+    return round((total + SPY_PRIOR_N * SPY_PRIOR_R) / (n + SPY_PRIOR_N), 2)
+
+
+def spy_rank(sellers_lots, profiles, key):
+    """sellers_lots: uid -> {'name', 'lots'}; profiles: uid -> {'reviews', ...}. Возвращает список продавцов, лучшие первыми."""
+    out = []
+    for uid, s in sellers_lots.items():
+        pr = profiles.get(uid)
+        if pr is None:
+            continue
+        rv = [r for r in pr['reviews'] if all(w in r['detail'].casefold() for w in key)]
+        rated = [r for r in rv if r['rating']]
+        n, tot = len(rated), sum(r['rating'] for r in rated)
+        five, bad = sum(1 for r in rated if r['rating'] == 5), sum(1 for r in rated if r['rating'] <= 2)
+        best = sorted([r for r in rv if r['text']], key=lambda r: (-(r['rating'] or 0), -len(r['text'])))[:3]
+        out.append({'uid': uid, 'name': s['name'], 'profile': f'/users/{uid}/', 'n': n, 'avg': round(tot / n, 2) if n else None,
+                    'five_share': round(five / n, 3) if n else None, 'bad': bad, 'score': spy_score(n, tot) if n else None,
+                    'last': rv[0]['when'] if rv else '', 'seen': len(pr['reviews']), 'pages': pr['pages'], 'cached': pr['cached'],
+                    'missing': pr['missing'], 'lots': s['lots'],
+                    'quotes': [{'rating': r['rating'], 'text': r['text']} for r in best]})
+    out.sort(key=lambda x: (x['score'] is None, -(x['score'] or 0), -x['n'], x['name'].casefold()))
+    return out
+
+
+def spy_stop_today(s):
+    """Блокировка/капча/редирект: как у загрузчика, до конца дня (общий fetch_state.json)."""
+    day = today()
+    try:
+        with open(STATE, 'w', encoding='utf-8') as f:
+            json.dump({'дата': day, 'результат': 'остановлен: ' + s.title + ' (шпион)',
+                       'время': datetime.datetime.now().isoformat(timespec='seconds')}, f, ensure_ascii=False)
+        if s.body:
+            os.makedirs(PAGES, exist_ok=True)
+            with open(os.path.join(PAGES, f'_stop_{day}.html'), 'wb') as f:
+                f.write(s.body[:500000])
+    except OSError:
+        pass
+    SPY['stopped'] = f'{s.title}. {s.detail}'.strip()
+    try:
+        tg_notify('lock', '⛔ Шпион остановлен: ' + s.title + '. Запросы до завтра остановлены, ничего не обходится.')
+    except Exception:
+        pass
+
+
+def spy_run(p):
+    note = {}
+    result = {'params': {k: (' '.join(v) if isinstance(v, list) else v) for k, v in p.items()}, 'when': '', 'lots_total': 0,
+              'lots_matched': 0, 'lots_used': 0, 'sellers_total': 0, 'sellers_checked': 0, 'partial': False, 'sellers': [], 'notes': []}
+    try:
+        SPY.update(stage='Загружаю страницу категории', done=0, total=0)
+        path = f"/lots/{p['node']}/"
+        spy_log(f'Категория {p["node"]}: один запрос страницы.')
+        status, final, body = http_get(SITE_BASE + path, CURRENCY_COOKIES['rub'])
+        text, _ = check_page(status, final, body, path)
+        lots = spy_parse_lots(text)
+        result['lots_total'] = len(lots)
+        matched = spy_select(lots, p)
+        sel = spy_pick(matched, p['sort'], p['lots_limit'])
+        result['lots_matched'], result['lots_used'] = len(matched), len(sel)
+        if re.search(r'Показать\s+ещ[её]', text):
+            result['notes'].append('На странице категории есть кнопка «Показать ещё»: если лотов на сайте больше, чем «Лотов в категории» ниже, часть могла не попасть в ответ.')
+        if lots and not any(l['uid'] for l in lots[:50]):
+            result['notes'].append('В блоках лотов не найдены ссылки на продавцов (/users/ID/): разметка могла измениться, шпион не может открыть профили.')
+        by = {}
+        for l in sel:
+            if not l['uid']:
+                continue
+            s = by.setdefault(l['uid'], {'name': l['seller'], 'lots': [], 'rev': l['reviews']})
+            s['lots'].append({'id': l['id'], 'title': l['title'], 'price': l['price'], 'url': f"/lots/offer?id={l['id']}", 'auto': l['auto']})
+        for s in by.values():
+            s['lots'].sort(key=lambda x: x['price'], reverse=(p['sort'] == 'expensive'))
+        order = list(by)                           # порядок первого появления в выбранных лотах: дешёвые/дорогие/популярные первыми
+        result['sellers_total'] = len(order)
+        chosen = order[:p['max_sellers']]
+        if len(order) > len(chosen):
+            result['notes'].append(f'Продавцов с подходящими лотами {len(order)}, проверено {len(chosen)} (в порядке выбранных лотов). Лимит меняется в форме.')
+        SPY.update(stage='Читаю отзывы продавцов', total=len(chosen))
+        spy_log(f'Лотов в категории {len(lots)}, подходит {len(matched)}, взято {len(sel)} ({p["sort"]}), продавцов {len(order)}, к проверке {len(chosen)}.')
+        profiles = {}
+        first = True
+        for i, uid in enumerate(chosen, 1):
+            if SPY['cancel']:
+                result['partial'] = True
+                result['notes'].append('Остановлено пользователем: показаны проверенные продавцы.')
+                break
+            try:
+                cached_before = bool(read_json(SPY_CACHE, {}).get(uid))
+                if not first and not cached_before:
+                    pause(*SPY_PAUSE)
+                profiles[uid] = spy_profile(uid, p['review_pages'], note)
+                if not profiles[uid]['cached']:
+                    first = False
+            except FetchStop as s:
+                if s.code == 2:
+                    spy_stop_today(s)
+                    result['partial'] = True
+                    result['notes'].append(f'СТОП: {s.title}. Показаны продавцы, проверенные до остановки. Сегодня запросы остановлены.')
+                    break
+                SPY['err'] = f'{s.title}. {s.detail}'.strip()
+                result['partial'] = True
+                result['notes'].append(f'Сбой: {s.title}. Показаны проверенные продавцы.')
+                break
+            except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
+                SPY['err'] = f'Нет связи с сайтом: {type(e).__name__}'
+                result['partial'] = True
+                result['notes'].append('Нет связи с сайтом: показаны проверенные продавцы.')
+                break
+            SPY['done'] = i
+        result['sellers_checked'] = len(profiles)
+        result['sellers'] = spy_rank(by, profiles, p['review_key'])
+        if profiles and not any(x['seen'] for x in result['sellers']):
+            result['notes'].append('Ни у одного продавца на профиле не найдено отзывов: вероятно, разметка профиля другая (см. журнал).')
+    except FetchStop as s:
+        if s.code == 2:
+            spy_stop_today(s)
+        else:
+            SPY['err'] = f'{s.title}. {s.detail}'.strip()
+        result['partial'] = True
+        result['notes'].append(f'{"СТОП" if s.code == 2 else "Сбой"}: {s.title}. {s.detail}'.strip())
+    except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as e:
+        SPY['err'] = f'Нет связи с сайтом: {type(e).__name__}'
+        result['notes'].append(SPY['err'])
+    except Exception as e:
+        traceback.print_exc()
+        SPY['err'] = f'{type(e).__name__}: {e}'
+    finally:
+        result['when'] = datetime.datetime.now().isoformat(timespec='seconds')
+        SPY['result'] = result
+        try:
+            write_json_atomic(SPY_LAST, result)
+        except OSError:
+            pass
+        SPY.update(running=False, stage='', ended=result['when'])
+        spy_log('Готово.' if not SPY['stopped'] and not SPY['err'] else 'Завершено с остановкой или сбоем.')
+
+
+def h_spy_start(b):
+    if SPY['running']:
+        return 409, {'error': 'Шпион уже работает.'}
+    if FETCH['running']:
+        return 409, {'error': 'Идёт загрузка снимка: подождите, параллельно запросы не шлются.'}
+    pr = protection()
+    if pr['stopped']:
+        return 409, {'error': 'Сегодня запросы остановлены (' + pr['reason'] + '). Ничего не обходится: повтор завтра.'}
+    p, err = spy_params(b)
+    if err:
+        return 400, {'error': err}
+    SPY.update(running=True, cancel=False, stage='Запуск', done=0, total=0, log=[], err='', stopped='', result=None,
+               started=datetime.datetime.now().isoformat(timespec='seconds'), ended='')
+    threading.Thread(target=spy_run, args=(p,), daemon=True).start()
+    return 200, {'ok': True}
+
+
+def h_spy_stop(_b):
+    if SPY['running']:
+        SPY['cancel'] = True
+    return 200, {'ok': True}
+
+
+def h_spy_status(_q=None):
+    res = SPY['result']
+    if res is None and not SPY['running']:
+        res = read_json(SPY_LAST, None) or None
+    return 200, {'running': SPY['running'], 'stage': SPY['stage'], 'done': SPY['done'], 'total': SPY['total'], 'log': SPY['log'][-20:],
+                 'err': SPY['err'], 'stopped': SPY['stopped'] or (protection()['reason'] if protection()['stopped'] else ''),
+                 'started': SPY['started'], 'ended': SPY['ended'], 'result': res}
+
+
+def h_spy_export(_b):
+    res = SPY['result'] or read_json(SPY_LAST, None)
+    if not res or not res.get('sellers'):
+        return 400, {'error': 'Нет результата для сохранения: сначала запустите шпиона.'}
+    os.makedirs(REPORTS, exist_ok=True)
+    path = os.path.join(REPORTS, f'spy_{datetime.date.today().isoformat()}.csv')
+    cols = ['место', 'продавец', 'профиль', 'отзывов по товару (факт)', 'средняя оценка (факт)', 'доля 5 звёзд (факт)',
+            'плохих 1-2 (факт)', 'балл (оценка)', 'последний отзыв', 'просмотрено отзывов', 'лот', 'цена ₽', 'автовыдача', 'ссылка на лот']
+    rows = []
+    for i, s in enumerate(res['sellers'], 1):
+        for l in (s['lots'] or [{}]):
+            rows.append({'место': i, 'продавец': s['name'], 'профиль': 'https://funpay.com' + s['profile'],
+                         'отзывов по товару (факт)': s['n'], 'средняя оценка (факт)': '' if s['avg'] is None else s['avg'],
+                         'доля 5 звёзд (факт)': '' if s['five_share'] is None else s['five_share'], 'плохих 1-2 (факт)': s['bad'],
+                         'балл (оценка)': '' if s['score'] is None else s['score'], 'последний отзыв': s['last'],
+                         'просмотрено отзывов': s['seen'], 'лот': l.get('title', ''), 'цена ₽': l.get('price', ''),
+                         'автовыдача': 'да' if l.get('auto') else 'нет', 'ссылка на лот': ('https://funpay.com' + l['url']) if l.get('url') else ''})
+    write_csv(path, cols, rows)
+    return 200, {'ok': True, 'path': path, 'rows': len(rows)}
+
+
+ROUTES_SPY = {'GET': {'/api/spy/status': h_spy_status}, 'POST': {'/api/spy/start': h_spy_start, '/api/spy/stop': h_spy_stop, '/api/spy/export': h_spy_export}}
+
+
 # ===== 9. Статистика ===================================================================================
 # Ваши продажи, прибыльные и слабые лоты, позиция по цене, кандидаты на повышение цены, баланс.
 # Откуда данные:
@@ -6774,7 +7223,7 @@ def h_security_ack(_b=None):
 # (ни скрипты, ни шрифты, ни картинки), а fetch разрешён только на свой адрес. Каждая вкладка = один блок ROUTES_*
 # в своём разделе; здесь они склеиваются. Обработчик: функция(body_или_query: dict) -> (HTTP-код, dict).
 ROUTES = {'GET': {}, 'POST': {}}
-for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_MS, ROUTES_STATS, ROUTES_STATV1):
+for _routes in (ROUTES_DETECTOR, ROUTES_ACCOUNT, ROUTES_CHAT, ROUTES_REMIND, ROUTES_CONFIRM, ROUTES_REVIEW, ROUTES_AUTOPILOT, ROUTES_TG, ROUTES_MS, ROUTES_SPY, ROUTES_STATS, ROUTES_STATV1):
     for _method in ('GET', 'POST'):
         ROUTES[_method].update(_routes[_method])
 ROUTES['GET']['/api/backups'] = h_backups_list
