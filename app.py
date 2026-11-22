@@ -7267,6 +7267,7 @@ def h_security_ack(_b=None):
 #     api.every(minutes, fn, name)               фоновое задание, не чаще раза в минуту; запускается только если плагин включён
 #     api.account(fn)                            fn() внутри guarded с низким приоритетом: общий замок, паузы PACE, блокировка при капче
 #     api.chat_send(node, text) / api.chat_history(node) / api.buyer_node(buyer_id)   вызывать только внутри api.account
+#     api.my_lots()                              список лотов вашего аккаунта (только внутри api.account)
 #     api.panel(fn) / api.action(name, fn)       панель (fn() -> dict) и кнопки (fn(body) -> dict)
 # Ошибка плагина не должна ронять программу: каждое обращение к плагину обёрнуто в try/except, причина идёт в его журнал.
 PLUGINS_DIR = os.path.join(HERE, 'plugins')
@@ -7347,6 +7348,10 @@ class PluginApi:
         if code != 200:
             raise UserError((res or {}).get('error') or f'Ошибка {code}')
         return res
+
+    def my_lots(self):
+        """Лоты вашего аккаунта: [{id, title, section, price}] (один запрос страницы профиля). Вызывать только внутри api.account."""
+        return [{'id': r['id'], 'title': r['title'], 'section': r['section'], 'price': r['price']} for r in load_offers()['rows']]
 
     def as_background(self):
         """Для потоков, которые плагин запускает сам: запросы аккаунта из них идут с низким приоритетом, как у автопилота."""

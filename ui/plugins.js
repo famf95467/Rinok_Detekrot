@@ -43,6 +43,14 @@ function plPanel(id){
       p.settings.fields.forEach(function(f){
         var w=el('div');w.style.marginBottom='8px';var i;
         if(f.type==='bool'){var lb=el('label');i=el('input');i.type='checkbox';i.checked=!!f.value;lb.appendChild(i);lb.appendChild(document.createTextNode(' '+f.label));w.appendChild(lb);}
+        else if(f.type==='multi'){
+          w.appendChild(el('div','fh',f.label));
+          i=el('div','slist');i.style.maxHeight='280px';
+          var chosen=f.value||[],opts=f.options||[];
+          if(!opts.length)i.appendChild(el('div','cnt','Список пуст. Нажмите «Обновить список лотов» (кнопка ниже) и откройте панель заново.'));
+          opts.forEach(function(o){var lb2=el('label');lb2.style.display='block';var cb=el('input');cb.type='checkbox';cb.value=o.v;cb.checked=chosen.indexOf(o.v)>=0;
+            lb2.appendChild(cb);lb2.appendChild(document.createTextNode(' '+o.l));i.appendChild(lb2);});
+          w.appendChild(i);}
         else{w.appendChild(el('div','fh',f.label));
           if(f.type==='longtext'){i=el('textarea','full');i.rows=3;i.maxLength=1500;}
           else if(f.type==='int'){i=el('input');i.type='number';i.min=f.min;i.max=f.max;i.style.width='90px';}
@@ -53,17 +61,23 @@ function plPanel(id){
         bx.appendChild(w);});
       var sv=el('button','p','Сохранить настройки');sv.type='button';
       sv.addEventListener('click',function(){var data={};
-        for(var k in inputs){var t=inputs[k];data[k]=t[1]==='bool'?t[0].checked:t[1]==='int'?Number(t[0].value):t[0].value;}
+        for(var k in inputs){var t=inputs[k];
+          if(t[1]==='multi')data[k]=Array.prototype.map.call(t[0].querySelectorAll('input:checked'),function(x){return x.value;});
+          else data[k]=t[1]==='bool'?t[0].checked:t[1]==='int'?Number(t[0].value):t[0].value;}
         plAct(d.id,p.settings.action,data);});
       bx.appendChild(sv);root.appendChild(bx);
     }
     (p.forms||[]).forEach(function(f){
       var bx=el('div','box');bx.appendChild(el('div','sv',f.title));if(f.help)bx.appendChild(el('div','cnt',f.help));
-      var i=f.kind==='longtext'?el('textarea','full'):el('input','full');
-      if(f.kind==='longtext'){i.rows=4;}else{i.type=f.kind==='secret'?'password':'text';}
-      i.autocomplete='off';i.placeholder=f.label;bx.appendChild(i);
+      var ed=f.kind==='editor';
+      var i=(f.kind==='longtext'||ed)?el('textarea','full'):el('input','full');
+      if(ed){i.rows=14;i.value=f.value||'';i.spellcheck=false;i.style.fontFamily='Consolas,monospace';}
+      else if(f.kind==='longtext'){i.rows=4;}else{i.type=f.kind==='secret'?'password':'text';}
+      i.autocomplete='off';if(f.label)i.placeholder=f.label;bx.appendChild(i);
       var b=el('button','',f.button);b.type='button';
-      b.addEventListener('click',function(){if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,{value:v});});
+      b.addEventListener('click',function(){
+        if(ed){if(!i.value.trim()&&!confirm('Поле пустое: из списка будут удалены ВСЕ ящики (кроме нужных открытым заказам). Продолжить?'))return;plAct(d.id,f.action,{value:i.value});return;}
+        if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,{value:v});});
       bx.appendChild(b);root.appendChild(bx);});
     if((p.buttons||[]).length){var bar=el('div','bar');p.buttons.forEach(function(b){bar.appendChild(plBtn(d.id,b));});root.appendChild(bar);}
     (p.tables||[]).forEach(function(t){
