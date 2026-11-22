@@ -16,6 +16,7 @@ stats.html
 sales.html
 merge.html
 auto.html
+plugins.html
 confirm.html
 review.html
 shell.js
@@ -36,6 +37,7 @@ merge.js
 sales.js
 tabs.js
 auto.js
+plugins.js
 home.js
 spy.js
 tg.js

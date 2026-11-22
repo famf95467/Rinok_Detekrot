@@ -1,7 +1,7 @@
 <script>
 (function(){
 'use strict';
-var TABS=[['home','Главная'],['marks','Отметки'],['prices','Цены'],['data','Данные'],['hist','История'],['acc','Аккаунт'],['chat','Сообщения'],['remind','Напоминания'],['confirm','Подтверждения'],['review','Отзывы'],['auto','Автопилот'],['stats','Статистика'],['sales','Продажи'],['spy','Шпион'],['merge','Слияние лотов']];
+var TABS=[['home','Главная'],['marks','Отметки'],['prices','Цены'],['data','Данные'],['hist','История'],['acc','Аккаунт'],['chat','Сообщения'],['remind','Напоминания'],['confirm','Подтверждения'],['review','Отзывы'],['auto','Автопилот'],['stats','Статистика'],['sales','Продажи'],['spy','Шпион'],['merge','Слияние лотов'],['plugins','Плагины']];
 var MARKS=['скрипт','ниша','нет'],CLS={'скрипт':'s','ниша':'n','нет':'x'};
 var lots=[],filter='none',data={},view='home',pdata=null,pollT=null;
 function $(id){return document.getElementById(id);}
