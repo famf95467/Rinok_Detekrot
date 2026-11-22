@@ -45,7 +45,7 @@ except ImportError:
 
 
 # ===== 1. Пути, константы, утилиты =====================================================================
-VERSION = '1.19.3'
+VERSION = '1.19.4'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -5340,10 +5340,12 @@ SPY_CACHE = P('spy_cache.json')
 SPY_LAST = P('spy_last.json')
 SPY_TTL = float(os.environ.get('MARKET_TEST_SPY_TTL', str(6 * 3600)))
 SPY_PAUSE = (2.5, 5.0)
-SPY_MAX_SELLERS = 40
-SPY_MAX_LOTS = 2000
+SPY_MAX_SELLERS = 300
+SPY_MAX_LOTS = 5000
 SPY_SORTS = ('popular', 'cheap', 'expensive')     # как на сайте: без сортировки (порядок страницы), стрелка вверх (дешевле), вниз (дороже)
-SPY_MAX_PAGES = 4
+SPY_MAX_PAGES = 10
+SPY_CACHE_MAX = 400                      # профилей в кэше
+SPY_CACHE_REVIEWS = 300                  # отзывов на профиль в кэше
 SPY_PRIOR_N, SPY_PRIOR_R = 3, 4.0
 SPY_LOCK = threading.Lock()
 SPY = {'running': False, 'cancel': False, 'stage': '', 'done': 0, 'total': 0, 'log': [], 'err': '', 'stopped': '',
@@ -5395,7 +5397,7 @@ def spy_params(b):
         v = b.get(k, dflt)
         if v in (None, ''):
             v = dflt
-        if isinstance(v, bool) or not isinstance(v, (int, float, str)) or not re.fullmatch(r'\d{1,3}', str(v).split('.')[0]) or not lo <= int(float(v)) <= hi:
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)) or not re.fullmatch(r'\d{1,4}', str(v).split('.')[0]) or not lo <= int(float(v)) <= hi:
             return None, f'Поле {k}: число от {lo} до {hi}.'
         p[k] = int(float(v))
     return p, ''
@@ -5532,10 +5534,16 @@ def spy_more_html(body):
     return t
 
 
-def spy_profile(uid, pages, note):
-    """Отзывы продавца: из кэша или с сайта. Возвращает {'reviews': [...], 'pages': n, 'cached': bool, 'missing': bool}."""
+def spy_cache_save(cache):
     with SPY_LOCK:
-        cache = read_json(SPY_CACHE, {})
+        for k in sorted(cache, key=lambda k: cache[k].get('at', 0))[:-SPY_CACHE_MAX]:
+            del cache[k]
+        write_json_atomic(SPY_CACHE, cache)
+
+
+def spy_profile(uid, pages, note, cache):
+    """Отзывы продавца: из кэша (cache грузится один раз за запуск и сохраняется пачками) или с сайта.
+    Возвращает {'reviews': [...], 'pages': n, 'cached': bool, 'missing': bool}."""
     c = cache.get(uid)
     if c and time.time() - c.get('at', 0) < SPY_TTL and c.get('pages', 1) >= pages:
         return {'reviews': c['reviews'], 'pages': c['pages'], 'cached': True, 'missing': False}
@@ -5571,12 +5579,7 @@ def spy_profile(uid, pages, note):
         reviews += more
         got += 1
         form = spy_more_form(more_html)
-    with SPY_LOCK:
-        cache = read_json(SPY_CACHE, {})
-        cache[uid] = {'at': time.time(), 'pages': got, 'reviews': reviews[:400]}
-        for k in sorted(cache, key=lambda k: cache[k].get('at', 0))[:-300]:
-            del cache[k]
-        write_json_atomic(SPY_CACHE, cache)
+    cache[uid] = {'at': time.time(), 'pages': got, 'reviews': [dict(r, text=r['text'][:100]) for r in reviews[:SPY_CACHE_REVIEWS]]}
     return {'reviews': reviews, 'pages': got, 'cached': False, 'missing': False}
 
 
@@ -5670,6 +5673,8 @@ def spy_run(p):
         SPY.update(stage='Читаю отзывы продавцов', total=len(chosen))
         spy_log(f'Лотов в категории {len(lots)}, подходит {len(matched)}, взято {len(sel)} ({p["sort"]}), продавцов {len(order)}, к проверке {len(chosen)}.')
         profiles = {}
+        cache = read_json(SPY_CACHE, {})
+        fresh = 0
         first = True
         for i, uid in enumerate(chosen, 1):
             if SPY['cancel']:
@@ -5677,12 +5682,16 @@ def spy_run(p):
                 result['notes'].append('Остановлено пользователем: показаны проверенные продавцы.')
                 break
             try:
-                cached_before = bool(read_json(SPY_CACHE, {}).get(uid))
+                c0 = cache.get(uid)
+                cached_before = bool(c0 and time.time() - c0.get('at', 0) < SPY_TTL and c0.get('pages', 1) >= p['review_pages'])
                 if not first and not cached_before:
                     pause(*SPY_PAUSE)
-                profiles[uid] = spy_profile(uid, p['review_pages'], note)
+                profiles[uid] = spy_profile(uid, p['review_pages'], note, cache)
                 if not profiles[uid]['cached']:
                     first = False
+                    fresh += 1
+                    if fresh % 10 == 0:
+                        spy_cache_save(cache)
             except FetchStop as s:
                 if s.code == 2:
                     spy_stop_today(s)
@@ -5699,6 +5708,7 @@ def spy_run(p):
                 result['notes'].append('Нет связи с сайтом: показаны проверенные продавцы.')
                 break
             SPY['done'] = i
+        spy_cache_save(cache)
         result['sellers_checked'] = len(profiles)
         result['sellers'] = spy_rank(by, profiles, p['review_key'])
         if profiles and not any(x['seen'] for x in result['sellers']):
