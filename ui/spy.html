@@ -6,13 +6,13 @@
 <label>Исключить слова: <input type="text" id="spy-ex" placeholder="необязательно" style="width:170px"></label></div>
 <div class="bar">
 <label>Какие лоты смотреть: <select id="spy-order"><option value="popular">Популярные (как на сайте по умолчанию)</option><option value="cheap">Сначала дешёвые (стрелка вверх)</option><option value="expensive">Сначала дорогие (стрелка вниз)</option></select></label>
-<label>Сколько лотов смотреть: <input type="number" id="spy-lots" min="1" max="2000" value="100" style="width:90px"></label></div>
+<label>Сколько лотов смотреть: <input type="number" id="spy-lots" min="1" max="5000" value="100" style="width:90px"></label></div>
 <div class="bar">
 <label>Цена от, ₽: <input type="number" id="spy-pmin" min="0" style="width:90px"></label>
 <label>до, ₽: <input type="number" id="spy-pmax" min="0" style="width:90px"></label>
 <label>Слово в отзывах: <input type="text" id="spy-key" placeholder="пусто = все отзывы продавца" style="width:260px"></label>
-<label>Продавцов проверить: <input type="number" id="spy-ms" min="1" max="40" value="15" style="width:70px"></label>
-<label>Страниц отзывов: <select id="spy-pg"><option value="1">1 (последние на профиле)</option><option value="2">2 (экспериментально)</option><option value="3">3 (экспериментально)</option><option value="4">4 (экспериментально)</option></select></label></div>
+<label>Продавцов проверить: <input type="number" id="spy-ms" min="1" max="300" value="15" style="width:70px"></label>
+<label>Страниц отзывов: <select id="spy-pg"><option value="1">1 (последние на профиле)</option><option value="2">2 (экспериментально)</option><option value="3">3 (экспериментально)</option><option value="4">4 (экспериментально)</option><option value="5">5 (экспериментально)</option><option value="6">6 (экспериментально)</option><option value="7">7 (экспериментально)</option><option value="8">8 (экспериментально)</option><option value="9">9 (экспериментально)</option><option value="10">10 (экспериментально)</option></select></label></div>
 <div class="bar"><button type="button" id="spy-go" class="p">Запустить шпиона</button><button type="button" id="spy-stop" style="display:none">Остановить</button><button type="button" id="spy-csv" style="display:none">Сохранить таблицу в CSV</button><span class="cnt" id="spy-prog"></span></div></div>
 <div id="spy-notes"></div>
 <div class="summary" id="spy-cards"></div>

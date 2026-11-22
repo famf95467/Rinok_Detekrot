@@ -1,13 +1,18 @@
 /* ---------- Шпион ---------- */
 /* Запускает фоновую задачу на сервере (/api/spy/*) и показывает продавцов с отзывами по товару, лучшие первыми. Ничего не пишет на сайт. */
 var SP={res:null,timer:null,busy:false,filled:false};
+var SPF=['spy-cat','spy-q','spy-ex','spy-order','spy-lots','spy-pmin','spy-pmax','spy-key','spy-ms','spy-pg'];
+/* Форма запоминается в браузере (localStorage, только удобство): после обновления страницы или перезапуска значения остаются, в том числе пустые. */
+function spSave(){try{var o={};SPF.forEach(function(id){o[id]=$(id).value;});localStorage.setItem('spy_form',JSON.stringify(o));}catch(e){}}
+function spRestore(){try{var o=JSON.parse(localStorage.getItem('spy_form')||'null');if(o&&typeof o==='object'){SPF.forEach(function(id){if(typeof o[id]==='string')$(id).value=o[id];});return true;}}catch(e){}return false;}
+SP.filled=spRestore();
 function spUrl(p){return 'https://funpay.com'+p;}
 function spLink(path,text,cls){var a=el('a',cls||'ol',text);a.href=spUrl(path);a.target='_blank';a.rel='noopener noreferrer';return a;}
 function spFill(res){
   /* Один раз за открытие страницы, пока пользователь ничего не вводил: иначе стёртые поля возвращались бы после каждого опроса статуса. */
   if(SP.filled||!res||!res.params)return;SP.filled=true;var p=res.params;
   function set(id,v){var e=$(id);if(e&&!e.value&&v!==null&&v!==undefined&&v!=='')e.value=v;}
-  set('spy-cat',p.node);set('spy-q',p.query);set('spy-ex',p.exclude);set('spy-key',p.review_key);set('spy-pmin',p.price_min);if(p.sort)$('spy-order').value=p.sort;set('spy-lots',p.lots_limit);set('spy-pmax',p.price_max);
+  set('spy-cat',p.node);set('spy-q',p.query);set('spy-ex',p.exclude);set('spy-key',p.review_key);set('spy-pmin',p.price_min);if(p.sort)$('spy-order').value=p.sort;set('spy-lots',p.lots_limit);if(p.max_sellers)$('spy-ms').value=p.max_sellers;if(p.review_pages)$('spy-pg').value=String(p.review_pages);set('spy-pmax',p.price_max);
 }
 function spBody(){
   return {category:$('spy-cat').value,query:$('spy-q').value,exclude:$('spy-ex').value,review_key:$('spy-key').value,
@@ -80,12 +85,13 @@ function spPoll(){
 }
 function spyLoad(){return spPoll();}
 $('spy-go').addEventListener('click',function(){
-  SP.filled=true;
-  var b=spBody(),n=Math.max(1,Math.min(40,Number(b.max_sellers)||15));
-  if(!confirm('Запустить шпиона? Будет 1 запрос страницы категории и до '+n+' запросов профилей продавцов'+(b.review_pages>1?' (плюс подгрузка отзывов)':'')+', с паузами 2,5–5 с, как гость. Профили из кэша (до 6 ч) не запрашиваются.'))return;
+  SP.filled=true;spSave();
+  var b=spBody(),n=Math.max(1,Math.min(300,Number(b.max_sellers)||15)),mins=Math.ceil(n*Math.max(1,b.review_pages)*4/60);
+  if(!confirm('Запустить шпиона? Будет 1 запрос страницы категории и до '+n+' запросов профилей продавцов'+(b.review_pages>1?' (плюс подгрузка отзывов)':'')+', с паузами 2,5–5 с, как гость (примерно до '+mins+' мин). Профили из кэша (до 6 ч) не запрашиваются.'))return;
   say('');
   ap('/api/spy/start',b).then(function(){return spPoll();}).catch(function(e){say(e.message,true);});
 });
 $('spy-stop').addEventListener('click',function(){ap('/api/spy/stop').then(function(){say('Останавливаю после текущего запроса…');}).catch(function(e){say(e.message,true);});});
 $('spy-csv').addEventListener('click',function(){ap('/api/spy/export').then(function(r){say('Таблица сохранена: '+r.path+' (строк '+r.rows+').');}).catch(function(e){say(e.message,true);});});
+SPF.forEach(function(id){$(id).addEventListener('input',spSave);$(id).addEventListener('change',spSave);});
 $('spy-sort').addEventListener('change',spList);$('spy-zero').addEventListener('change',spList);
