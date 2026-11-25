@@ -16,7 +16,7 @@
 <label>и сумма заказа не больше, ₽ (0 = без ограничения): <input type="number" id="ap-rmax" min="0" style="width:90px"></label></div>
 <div class="fh">Текст напоминания ({order} заменится на номера заказов)</div>
 <textarea id="ap-text" rows="3" class="full" maxlength="1000"></textarea>
-<div class="bar"><button type="button" id="ap-save">Сохранить настройки</button><button type="button" id="ap-run">Запустить цикл сейчас</button><button type="button" id="ap-resume" style="display:none">Снять паузу отправок</button></div></div>
+<div class="bar"><button type="button" id="ap-run">Запустить цикл сейчас</button><button type="button" id="ap-resume" style="display:none">Снять паузу отправок</button><span class="cnt" id="ap-saved">Настройки сохраняются сами.</span></div></div>
 <h3>Telegram</h3>
 <div class="box"><div class="cnt" id="tg-state">Читаю состояние…</div>
 <div class="cnt" style="margin-top:4px">Токен бота и ваш chat_id задаются вне программы: переменные TG_BOT_TOKEN и TG_CHAT_ID (Railway) или файл tg_token.txt рядом с app.py (строка 1 токен, строка 2 chat_id). На экран и в журналы они не попадают. Команды принимаются только из личного чата с вашим chat_id.</div>
