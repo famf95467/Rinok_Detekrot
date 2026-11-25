@@ -89,9 +89,8 @@ function plPanel(id){
         if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,plMerge(f.data,{value:v}));});
       bx.appendChild(b);root.appendChild(bx);});
     if((p.buttons||[]).length){var bar=el('div','bar');p.buttons.forEach(function(b){bar.appendChild(plBtn(d.id,b));});root.appendChild(bar);}
-    (p.tables||[]).forEach(function(t){
-      root.appendChild(el('h3','',t.title));
-      if(!t.rows.length){root.appendChild(el('div','empty','Пока пусто.'));return;}
+    (p.tables||[]).forEach(function(t,ti){
+      if(!t.rows.length){root.appendChild(el('h3','',t.title));root.appendChild(el('div','empty','Пока пусто.'));return;}
       var tb=el('table'),th=el('thead'),hr=el('tr');t.columns.concat(['']).forEach(function(c){hr.appendChild(el('th','',c));});th.appendChild(hr);tb.appendChild(th);
       var bd=el('tbody');t.rows.forEach(function(r){var tr=el('tr');r.cells.forEach(function(c){
           if(c&&typeof c==='object'&&c.select){
@@ -101,10 +100,10 @@ function plPanel(id){
             td0.appendChild(sl);tr.appendChild(td0);}
           else tr.appendChild(el('td','',String(c)));});
         var td=el('td');r.buttons.forEach(function(b){td.appendChild(plBtn(d.id,b));});tr.appendChild(td);bd.appendChild(tr);});
-      tb.appendChild(bd);root.appendChild(tb);});
+      tb.appendChild(bd);root.appendChild(foldWrap('pl-'+d.id+'-t'+ti,t.title,t.rows.length,tb));});
     root.appendChild(el('h3','','Журнал плагина'));
     if(!d.log.length)root.appendChild(el('div','empty','Журнал пуст.'));
-    else root.appendChild(tbl(['Время','Итог','Событие'],d.log.map(function(l){return [l.time.replace('T',' '),l.ok?'ок':'ошибка',l.text];})));
+    else fold5(root,'pl-'+d.id+'-log',tbl(['Время','Итог','Событие'],d.log.map(function(l){return [l.time.replace('T',' '),l.ok?'ок':'ошибка',l.text];})));
   }).catch(function(e){say(e.message,true);});
 }
 plTabName();

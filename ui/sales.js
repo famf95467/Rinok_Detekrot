@@ -16,12 +16,12 @@ function msReport(){
     [['Продано, шт. (оценка)',d.tot.sold],['Выручка, ₽ (оценка)',money(d.tot.rev)],['Событий',d.tot.events],['Продавцов',d.tot.sellers],['Лотов',d.tot.lots]].forEach(function(x){var b=el('div','sc');b.appendChild(el('div','sl',x[0]));b.appendChild(el('div','sv',String(x[1])));c.appendChild(b);});
     var a=$('ms-sellers');a.textContent='';
     if(!d.sellers.length)a.appendChild(el('div','empty','Продаж за период не засчитано.'));
-    else a.appendChild(tbl(['Продавец','Продано, шт.','Выручка, ₽','Событий','Лотов','Последняя'],d.sellers.map(function(r){return[r.seller,String(r.sold),money(r.rev),String(r.events),String(r.lots),r.last];}),[1,2,3,4]));
+    else fold5(a,'ms-sellers',tbl(['Продавец','Продано, шт.','Выручка, ₽','Событий','Лотов','Последняя'],d.sellers.map(function(r){return[r.seller,String(r.sold),money(r.rev),String(r.events),String(r.lots),r.last];}),[1,2,3,4]));
     var b=$('ms-lots');b.textContent='';
     if(!d.lots.length)b.appendChild(el('div','empty','Нет данных.'));
-    else b.appendChild(tbl(['Лот','Продавец','Цена','Продано, шт.','Выручка, ₽','Событий'],d.lots.map(function(r){return[r.title,r.seller,r.price===null?'—':money(r.price)+' ₽',String(r.sold),money(r.rev),String(r.events)];}),[2,3,4,5]));
+    else fold5(b,'ms-lots',tbl(['Лот','Продавец','Цена','Продано, шт.','Выручка, ₽','Событий'],d.lots.map(function(r){return[r.title,r.seller,r.price===null?'—':money(r.price)+' ₽',String(r.sold),money(r.rev),String(r.events)];}),[2,3,4,5]));
     var p=$('ms-daily');p.textContent='';
-    p.appendChild(tbl(['День','Продано, шт.','Выручка, ₽','Проходов','Сбоев','Неполных страниц'],d.per_day.map(function(r){return[r.date,String(r.sold),money(r.rev),String(r.passes),String(r.errors),String(r.incomplete)];}),[1,2,3,4,5]));
+    fold5(p,'ms-daily',tbl(['День','Продано, шт.','Выручка, ₽','Проходов','Сбоев','Неполных страниц'],d.per_day.map(function(r){return[r.date,String(r.sold),money(r.rev),String(r.passes),String(r.errors),String(r.incomplete)];}),[1,2,3,4,5]));
   }).catch(function(e){say(e.message,true);});}
 function msLoad(force){
   return api('/api/ms/status').then(function(st){msFill(st,force);return msReport();}).catch(function(e){say(e.message,true);});}

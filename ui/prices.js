@@ -16,7 +16,7 @@ function renderTable(rows){
       var tg=el('td','');if(r.dup)tg.appendChild(el('span','tag','дубль '+r.dup));if(r.niche)tg.appendChild(el('span','tag','ниша'));tr.appendChild(tg);}
     else{tr.appendChild(el('td','',r.seller));tr.appendChild(el('td','num',String(r.n)));tr.appendChild(el('td','num',money(r.min)+' ₽'));tr.appendChild(el('td','num',money(r.max)+' ₽'));tr.appendChild(el('td','num',String(r.reviews)));}
     tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);fold5(box,'p-table-'+S.mode,t,d.length,1000);
   if(d.length>shown.length)box.appendChild(el('div','empty','Показаны первые 1000 из '+d.length+'. Уточните фильтры.'));
 }
 function recalc(){

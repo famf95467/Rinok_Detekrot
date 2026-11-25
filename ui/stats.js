@@ -18,7 +18,7 @@ function stReport(){
       var cs=el('td','num'),i=el('input');i.type='number';i.min='0';i.style.width='90px';i.value=(r.cost===null||r.cost===undefined)?'':r.cost;
       i.addEventListener('change',function(){ap('/api/stat/cost',{title:r.title,cost:i.value}).then(function(){say('');return stReport();}).catch(function(e){say(e.message,true);});});
       cs.appendChild(i);tr.appendChild(cs);tr.appendChild(el('td','num',money(r.profit)));tr.appendChild(el('td','',r.tags));tb.appendChild(tr);});
-    t.appendChild(tb);box.appendChild(t);
+    t.appendChild(tb);box.appendChild(foldWrap('st-lots','Лоты за период',d.lots.length,t));
   }).catch(function(e){say(e.message,true);});
 }
 $('st-days').addEventListener('change',stReport);
@@ -34,7 +34,7 @@ $('st-bal').addEventListener('click',function(){ap('/api/stat/profile').then(fun
 $('st-pos').addEventListener('click',function(){
   ap('/api/stat/position').then(function(d){var box=$('st-pos-t');box.textContent='';
     if(!d.rows.length){box.appendChild(el('div','empty',d.note||'Нет данных.'));return;}
-    box.appendChild(tbl(['Лот','Цена','Место по цене','Медиана рынка','Заказов за 7 дн.','за 30 дн.','Подсказка'],d.rows.map(function(r){return[r.title,money(r.price)+' ₽',r.rank+' из '+r.of,money(r.median)+' ₽',String(r.n7),String(r.n30),r.suggest?('поднять до '+money(r.suggest)+' ₽'):'—'];}),[1,2,3,4,5]));
+    fold5(box,'st-pos-t',tbl(['Лот','Цена','Место по цене','Медиана рынка','Заказов за 7 дн.','за 30 дн.','Подсказка'],d.rows.map(function(r){return[r.title,money(r.price)+' ₽',r.rank+' из '+r.of,money(r.median)+' ₽',String(r.n7),String(r.n30),r.suggest?('поднять до '+money(r.suggest)+' ₽'):'—'];}),[1,2,3,4,5]));
     box.appendChild(el('div','cnt','Данные витрины на '+(d.date||'—')+'. Подсказка — оценка: цена не выше медианы и не больше +25%.'));
   }).catch(function(e){say(e.message,true);});
 });

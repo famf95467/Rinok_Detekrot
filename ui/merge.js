@@ -26,7 +26,7 @@ function mgList(key,boxId,rows,pick,empty){
     td.appendChild(i);tr.appendChild(td);
     tr.appendChild(el('td','',l.title));tr.appendChild(el('td','id',l.id));tr.appendChild(el('td','num',String(l.orders)));tr.appendChild(el('td','',l.last||'—'));
     tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);box.appendChild(foldWrap('mg-'+key,key==='a'?'Список: сейчас в профиле':'Список: были раньше, сейчас нет',rows.length,t));
 }
 function mgRender(){
   var ok=MG.loaded,live=MG.lots.filter(function(l){return !l.into&&mgMatch(l);});
@@ -39,16 +39,14 @@ function mgRender(){
   var byId={};MG.lots.forEach(function(l){byId[l.id]=l;});
   var merged=MG.lots.filter(function(l){return l.into;});
   if(!merged.length){dn.appendChild(el('div','cnt','Слияний пока нет.'));return;}
-  var shown=MG.all?merged:merged.slice(0,5);
+  var shown=merged;
   var rows=shown.map(function(l){var to=byId[l.into];return[l.title,l.id,String(l.orders),to?to.title:('ID '+l.into),l.into];});
   var t=tbl(['Старый лот','ID','Заказов','Объединён с','ID'],rows,[2]);
   Array.prototype.forEach.call(t.querySelectorAll('tbody tr'),function(tr,i){var l=shown[i],td=el('td','btns'),b=el('button','b','Разъединить');b.type='button';
     b.addEventListener('click',function(){if(!confirm('Разъединить «'+l.title.slice(0,60)+'»? Он снова будет считаться отдельным лотом.'))return;
       ap('/api/stat/v1/lot_unmerge',{from:l.id}).then(function(){say('Лоты разъединены.');mgLoad(true);}).catch(function(e){say(e.message,true);});});
     td.appendChild(b);tr.appendChild(td);});
-  t.querySelector('thead tr').appendChild(el('th','',''));dn.appendChild(t);
-  if(merged.length>5){var tg=el('button','','');tg.type='button';tg.textContent=MG.all?'Свернуть до 5 строк':'Показать все ('+merged.length+')';
-    tg.addEventListener('click',function(){MG.all=!MG.all;mgRender();});dn.appendChild(tg);}
+  t.querySelector('thead tr').appendChild(el('th','',''));fold5(dn,'mg-done',t);
 }
 function mgLoad(force){
   if(force!==true&&MG.loaded&&Date.now()-MG.at<300000){mgRender();return Promise.resolve();}   /* профиль заново не запрашиваем чаще раза в 5 минут */

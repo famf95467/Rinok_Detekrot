@@ -12,9 +12,9 @@ function apFill(st,force){
   $('ap-resume').style.display=st.paused?'inline-block':'none';
   var box=$('ap-steps');box.textContent='';
   if(!st.steps.length)box.appendChild(el('div','cnt','Цикл ещё не выполнялся: первый запуск через ~45 секунд после старта программы.'));
-  else box.appendChild(tbl(['Шаг','Результат'],st.steps.map(function(x){return [x.name+(x.ok?'':' (!)'),x.text];})));
+  else fold5(box,'ap-steps',tbl(['Шаг','Результат'],st.steps.map(function(x){return [x.name+(x.ok?'':' (!)'),x.text];})));
   var lg=$('ap-log');lg.textContent='';
-  if(st.log.length)lg.appendChild(tbl(['Время','Шаг','Результат'],st.log.map(function(x){return [x.time.replace('T',' '),x.step,(x.ok?'':'(!) ')+x.text];})));
+  if(st.log.length)fold5(lg,'ap-log',tbl(['Время','Шаг','Результат'],st.log.map(function(x){return [x.time.replace('T',' '),x.step,(x.ok?'':'(!) ')+x.text];})));
 }
 var AP_DIRTY=false;
 function apLoad(force){return api('/api/autopilot/status').then(function(st){apFill(st,force);apBanner(st);}).catch(function(e){say(e.message,true);});}

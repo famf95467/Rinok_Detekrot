@@ -59,7 +59,7 @@ function spList(){
     var tl=el('td');
     x.lots.forEach(function(l){var d=el('div');d.appendChild(document.createTextNode(money(l.price)+' ₽ · '));d.appendChild(spLink(l.url,l.title.length>70?l.title.slice(0,70)+'…':l.title));if(l.auto)d.appendChild(el('span','tag','автовыдача'));tl.appendChild(d);});
     tr.appendChild(tl);tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);box.appendChild(foldWrap('spy-list','Продавцы',rows.length,t));
 }
 function spRender(st){
   var s=$('spy-state');

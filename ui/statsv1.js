@@ -8,14 +8,14 @@ function sv1Pend(){return ap('/api/stat/v1/rewards').then(function(d){
       b.addEventListener('click',function(){if(!confirm('Записать награду за заказ #'+p.order+' ('+d.settings.reward_units+' ед.) как выданную?'))return;b.disabled=true;
         ap('/api/stat/v1/reward_add',{order:p.order,stars:5,units:d.settings.reward_units}).then(function(){say('');sv1All();}).catch(function(e){say(e.message,true);b.disabled=false;});});
       td.appendChild(b);tr.appendChild(td);tr.appendChild(el('td','id','#'+p.order));tr.appendChild(el('td','id',p.lot));tr.appendChild(el('td','',p.title));tr.appendChild(el('td','',p.date));tb.appendChild(tr);});
-    t.appendChild(tb);box.appendChild(t);}
+    t.appendChild(tb);box.appendChild(foldWrap('sv-pend','Заказы с 5★ без награды',d.pending.length,t));}
   var rw=$('sv-rw');rw.textContent='';rw.appendChild(el('div','cnt','Журнал (последние 100), всего потрачено на награды: '+money(d.total)+' ₽ (факт)'));
-  if(d.items.length)rw.appendChild(tbl(['Дата','Заказ','Лот','Звёзды','Единиц','Стоимость, ₽','Источник'],d.items.map(function(r){return[r.date,'#'+r.order,r.lot||'—',String(r.stars||'—'),String(r.units),money(r.cost),r.src||''];}),[3,4,5]));
+  if(d.items.length)fold5(rw,'sv-rw',tbl(['Дата','Заказ','Лот','Звёзды','Единиц','Стоимость, ₽','Источник'],d.items.map(function(r){return[r.date,'#'+r.order,r.lot||'—',String(r.stars||'—'),String(r.units),money(r.cost),r.src||''];}),[3,4,5]));
 }).catch(function(e){say(e.message,true);});}
 function sv1Exp(){return ap('/api/stat/v1/expenses').then(function(d){
   var c=$('ex-c');if(!c.options.length)d.cats.forEach(function(x){var o=el('option','',x);o.value=x;c.appendChild(o);});
   if(!$('ex-d').value)$('ex-d').value=d.today;
-  var box=$('sv-ex');box.textContent='';if(d.items.length)box.appendChild(tbl(['Дата','Категория','Сумма, ₽','Комментарий'],d.items.map(function(e){return[e.date,e.category,money(e.amount),e.comment||''];}),[2]));
+  var box=$('sv-ex');box.textContent='';if(d.items.length)fold5(box,'sv-ex',tbl(['Дата','Категория','Сумма, ₽','Комментарий'],d.items.map(function(e){return[e.date,e.category,money(e.amount),e.comment||''];}),[2]));
 }).catch(function(e){say(e.message,true);});}
 function sv1Set(){return ap('/api/stat/v1/settings_get').then(function(d){
   var box=$('sv-set');box.textContent='';
@@ -49,7 +49,7 @@ function sv1Report(){
       tr.appendChild(ps);var pv=x.promo||{},vt='';
       if(pv.verdict){vt=pv.verdict+(pv.R!==undefined?': Р='+money(pv.R)+' ₽ (Д='+pv.D+' ед. × П='+money(pv.P)+' − З='+money(pv.Z)+'); безубыточность '+pv.T+' ед. на отзыв':'')+(pv.why?' ('+pv.why+')':'')+'; ед. до/после '+pv.E_before+'/'+pv.E_after;}
       tr.appendChild(el('td','',vt));bd.appendChild(tr);});
-    tb.appendChild(bd);lb.appendChild(tb);
+    tb.appendChild(bd);lb.appendChild(foldWrap('sv-lotstbl','Лоты за период',d.lots.length,tb));
   }).catch(function(e){say(e.message,true);});
 }
 function sv1All(){sv1Report();sv1Pend();sv1Exp();sv1Set();}
@@ -81,7 +81,7 @@ function svLots(){
           ap('/api/stat/v1/lot_merge',{from:l.id,to:sel.value}).then(function(){say('');svLots();sv1Report();}).catch(function(e){say(e.message,true);});});
         td.appendChild(sel);td.appendChild(b2);}
       tr.appendChild(td);tb.appendChild(tr);});
-    t.appendChild(tb);var wrap=el('div');wrap.style.overflowX='auto';wrap.appendChild(t);box.appendChild(wrap);
+    t.appendChild(tb);var wrap=el('div');wrap.style.overflowX='auto';wrap.appendChild(t);box.appendChild(foldWrap('sv-lotbox','Лоты из заказов',d.lots.length,wrap));
     if(!d.lots.length)box.appendChild(el('div','empty','Лотов с ID пока нет: нажмите «Загрузить детали заказов».'));
   }).catch(function(e){say(e.message,true);});}
 $('sv-lots').addEventListener('click',function(){show('merge');});

@@ -21,7 +21,7 @@ function loadSec(){
     $('sec-key').style.color=k.bad?'var(--x)':'';
     $('sec-locked').textContent=d.locked.length?('Сейчас заблокированы: '+d.locked.map(function(x){return x.ip+' (ещё '+x.min+' мин)';}).join(', ')+'.'):'';
     var lg=$('sec-log');lg.textContent='';
-    lg.appendChild(d.events.length?tbl(['Время','IP','Событие','Примечание'],d.events.map(function(x){return [x.time,x.ip,x.event,x.note];})):el('div','cnt','Событий пока нет.'));
+    if(d.events.length)fold5(lg,'sec-log',tbl(['Время','IP','Событие','Примечание'],d.events.map(function(x){return [x.time,x.ip,x.event,x.note];})));else lg.appendChild(el('div','cnt','Событий пока нет.'));
   }).catch(function(e){say(e.message,true);});
 }
 $('sec-ack').addEventListener('click',function(){ap('/api/security/ack').then(function(){loadSec();return api('/api/autopilot/status').then(apBanner);}).catch(function(e){say(e.message,true);});});
@@ -42,7 +42,7 @@ function accRender(){
     var tr=el('tr'),td=el('td','btns'),b=el('button','b','Изменить');b.type='button';b.addEventListener('click',function(){accEdit(r);});td.appendChild(b);tr.appendChild(td);
     tr.appendChild(el('td','id',r.id));tr.appendChild(el('td','',r.section));tr.appendChild(el('td','',r.title));tr.appendChild(el('td','',r.auto==='да'?'да':'нет'));
     tr.appendChild(el('td','num',r.price));tr.appendChild(el('td','num',r.amount||'нет на странице'));tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);if(!rows.length)box.appendChild(el('div','empty','Лотов нет.'));raiseRender();
+  t.appendChild(tb);box.appendChild(foldWrap('ac-tbl','Ваши лоты',rows.length,t));if(!rows.length)box.appendChild(el('div','empty','Лотов нет.'));raiseRender();
 }
 function raiseSections(){var m={},ord=[];AC.rows.forEach(function(r){if(!r.node)return;if(!m[r.node]){m[r.node]={node:r.node,section:r.section,n:0};ord.push(m[r.node]);}m[r.node].n++;});return ord;}
 function raiseRender(){
@@ -52,7 +52,7 @@ function raiseRender(){
   list.forEach(function(x){var tr=el('tr'),td=el('td','btns'),b=el('button','b','Поднять');b.type='button';
     b.addEventListener('click',function(){if(!confirm('Поднять предложения раздела «'+x.section+'»?'))return;b.disabled=true;raiseOne(x).catch(function(e){say(e.message,true);}).then(function(){b.disabled=false;});});
     td.appendChild(b);tr.appendChild(td);tr.appendChild(el('td','',x.section));tr.appendChild(el('td','num',String(x.n)));tr.appendChild(el('td','',AC.rs[x.node]||''));tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);box.appendChild(foldWrap('ac-rlist','Разделы для поднятия',list.length,t));
 }
 function raiseOne(x){
   say('Поднимаю: '+x.section+'…');

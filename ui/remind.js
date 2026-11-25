@@ -26,7 +26,7 @@ function remScan(){
         rmSendOne(r,text).then(function(){say('');rmIdle();}).catch(function(e){say(e.message,true);b.disabled=false;});});
       td.appendChild(b);tr.appendChild(td);tr.appendChild(el('td','',g.name));
       var otd=el('td','');otd.style.whiteSpace='pre-line';g.orders.forEach(function(o,k){if(k)otd.appendChild(document.createTextNode('\n'));otd.appendChild(ordLink(o.id));otd.appendChild(document.createTextNode(' ('+o.age+' ч'+(o.sent?', напоминаний '+o.sent:'')+') '+o.title));});tr.appendChild(otd);tr.appendChild(st);tb.appendChild(tr);});
-    t.appendChild(tb);box.appendChild(t);rmIdle();
+    t.appendChild(tb);box.appendChild(foldWrap('rm-tbl','Покупатели для напоминания',d.groups.length,t));rmIdle();
   }).catch(function(e){say(e.message,true);rmIdle();});
 }
 function remAll(){

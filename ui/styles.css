@@ -111,3 +111,6 @@ button.p{background:var(--acc);border-color:var(--acc);color:#fff}
 .steps>.hq{padding-bottom:0;margin-bottom:7px}
 .steps>button#ap-resume{align-self:flex-end}
 .chip{display:inline-block;padding:6px 11px;border:1px dashed var(--line);border-radius:10px;color:var(--mut)}
+.foldh{display:block;width:100%;text-align:left;margin:8px 0 6px;font-weight:600}
+.foldb{margin-bottom:6px}
+.showall{margin:6px 0}

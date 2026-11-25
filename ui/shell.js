@@ -22,5 +22,33 @@ function qinc(a,i){var m=a.length-1,j=Math.floor(i*m/4),d=i*m-j*4;return j+1<a.l
 function stats(v){if(!v.length)return null;var a=v.slice().sort(function(x,y){return x-y;}),n=a.length,m=n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2;return{n:n,min:a[0],max:a[n-1],med:m,q1:n>=5?qinc(a,1):null,q3:n>=5?qinc(a,3):null};}
 function ordLink(id){var a=el('a','ol','#'+id);a.href='https://funpay.com/orders/'+encodeURIComponent(id)+'/';a.target='_blank';a.rel='noopener noreferrer';a.title='Открыть страницу заказа на FunPay';return a;}
 function tbl(cols,rows,nc){var t=el('table'),th=el('thead'),hr=el('tr');cols.forEach(function(c,i){hr.appendChild(el('th',nc&&nc.indexOf(i)>=0?'num':'',c));});th.appendChild(hr);t.appendChild(th);var tb=el('tbody');rows.forEach(function(r){var tr=el('tr');r.forEach(function(v,i){tr.appendChild(el('td',nc&&nc.indexOf(i)>=0?'num':'',v));});tb.appendChild(tr);});t.appendChild(tb);return t;}
+function lsGet(k){try{return localStorage.getItem(k);}catch(e){return null;}}
+function lsSet(k,v){try{localStorage.setItem(k,v);}catch(e){}}
+/* 3.3 «Первые 5»: кладёт построенную таблицу t в box; строки после пятой прячутся, кнопка «Показать все (N)». total и cap нужны, если список обрезан лимитом (тогда подпись «N, лимит L»). Состояние: list_<id>. */
+function fold5(box,id,t,total,cap){
+  var rows=t.querySelectorAll('tbody tr'),n=rows.length,all=(total===undefined||total===null)?n:total;
+  box.appendChild(t);
+  if(n<=5)return;
+  var open=lsGet('list_'+id)==='1',b=el('button','showall');b.type='button';
+  function paint(){for(var i=5;i<n;i++)rows[i].style.display=open?'':'none';
+    b.textContent=open?'Свернуть до 5 строк':'Показать все ('+((cap&&all>cap)?(all+', лимит '+cap):all)+')';}
+  b.addEventListener('click',function(){open=!open;lsSet('list_'+id,open?'1':'0');paint();});
+  paint();box.appendChild(b);
+}
+/* 3.3 Сворачиваемый блок: все строки остаются, сворачивается весь блок стрелкой. Состояние: fold_<id> ('0' = свёрнут). */
+function foldHead(h,title,n,open){h.textContent=(open?'▾ ':'▸ ')+title+((n===undefined||n===null)?'':' ('+n+')');h.setAttribute('aria-expanded',open?'true':'false');}
+function foldWrap(id,title,n,content){
+  var w=el('div','foldw'),h=el('button','foldh'),b=el('div','foldb'),open=lsGet('fold_'+id)!=='0';
+  h.type='button';b.appendChild(content);w.appendChild(h);w.appendChild(b);
+  function paint(){b.style.display=open?'':'none';foldHead(h,title,n,open);}
+  h.addEventListener('click',function(){open=!open;lsSet('fold_'+id,open?'1':'0');paint();});
+  paint();return w;
+}
+function foldStatic(node,id,title){
+  var h=el('button','foldh'),open=lsGet('fold_'+id)!=='0';h.type='button';
+  function paint(){node.style.display=open?'':'none';foldHead(h,title,null,open);}
+  h.addEventListener('click',function(){open=!open;lsSet('fold_'+id,open?'1':'0');paint();});
+  node.parentNode.insertBefore(h,node);paint();
+}
 function svg(tag,at,text){var e=document.createElementNS('http://www.w3.org/2000/svg',tag);for(var k in at)e.setAttribute(k,at[k]);if(text!==undefined)e.textContent=text;return e;}
 

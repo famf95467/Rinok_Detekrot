@@ -223,14 +223,14 @@ function rvRender(){
     if(!o.review_at)ac.appendChild(cfBtn(o.skip?'Снять «не просить»':'Не просить',function(){
       ap('/api/review/skip',{id:o.id,off:o.skip}).then(function(){say('');return rvLoad();}).catch(function(e){say(e.message,true);});}));
     tr.appendChild(ac);tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);box.appendChild(foldWrap('rv-tbl','Подтверждённые заказы',RV.orders.length,t));
 }
 function rvLog(rows){
   var box=$('rv-log');box.textContent='';
   if(!rows||!rows.length){box.appendChild(el('div','cnt','Записей нет.'));return;}
   var t=tbl(['Время','Заказ','Действие','Подробности','Результат'],rows.map(function(r){return[r.time.replace('T',' '),'',r.action,r.detail,r.ok?'ок':'отказ'];}));
   Array.prototype.forEach.call(t.querySelectorAll('tbody tr'),function(tr,i){var r=rows[i];if(r&&r.order)tr.children[1].appendChild(ordLink(r.order));});
-  box.appendChild(t);
+  fold5(box,'rv-log',t);
 }
 $('rv-reload').addEventListener('click',function(){
   if(RVS.dirty){if(!confirm('Есть несохранённые правки. Загрузить версию с сервера и отбросить их?'))return;RVS.dirty=false;}

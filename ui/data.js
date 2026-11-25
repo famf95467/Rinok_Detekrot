@@ -11,7 +11,7 @@ function renderSnaps(list){
     tr.appendChild(el('td','num',x.error?'—':String(x.total)));tr.appendChild(el('td','num',(x.error||x.calc==='')?'—':String(x.calc)));
     tr.appendChild(el('td',x.not_rub?'warn':'',x.error?'—':(x.units+(x.not_rub?' (не только рубли)':''))));
     tr.appendChild(el('td',x.error?'warn':'',x.error?('ошибка: '+x.error):(x.page_exists?'да':'да (файл страницы удалён, история сохранена)')));tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);fold5(box,'d-snaps',t);
 }
 function renderData(d){
   $('d-note').textContent='';var p=d.protection,st=$('d-state');
@@ -26,7 +26,7 @@ function loadAuto(){
   return api('/api/auto').then(function(a){
     $('a-on').checked=a.enabled;$('a-h').value=a.hours;$('a-state').textContent=a.text;var box=$('a-log');box.textContent='';
     if(!a.log.length)return;
-    box.appendChild(tbl(['Начало запуска','Кто запустил','Результат'],a.log.map(function(r){return[r.time,r.source,r.text];})));
+    fold5(box,'a-log',tbl(['Начало запуска','Кто запустил','Результат'],a.log.map(function(r){return[r.time,r.source,r.text];})));
   }).catch(function(e){say(e.message,true);});
 }
 function loadData(){$('d-note').textContent='Читаю снимки… при первом запуске может занять до минуты.';loadAuto();loadBackups();return api('/api/data').then(renderData).catch(function(e){$('d-note').textContent='';say(e.message,true);});}

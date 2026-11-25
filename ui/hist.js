@@ -24,9 +24,9 @@ function hDiff(box,res,ia,ib){
   var A=res[ia].rows,B=res[ib].rows,ma={},mb={};A.forEach(function(l){ma[l.id]=l;});B.forEach(function(l){mb[l.id]=l;});
   var added=B.filter(function(l){return !ma[l.id];}),gone=A.filter(function(l){return !mb[l.id];}),chg=[];
   B.forEach(function(l){var o=ma[l.id];if(o&&o.price!==l.price)chg.push([o,l]);});
-  function sec(title,rows,cols,mk,nc,pr){
+  var secn=0;function sec(title,rows,cols,mk,nc,pr){var key='h-diff-'+(++secn);
     box.appendChild(el('h3','',title+': '+rows.length));if(!rows.length){box.appendChild(el('div','cnt','Нет.'));return;}
-    var sh=rows.slice().sort(function(x,y){return pr(x)-pr(y);}).slice(0,200);box.appendChild(tbl(cols,sh.map(mk),nc));
+    var sh=rows.slice().sort(function(x,y){return pr(x)-pr(y);}).slice(0,200);fold5(box,key,tbl(cols,sh.map(mk),nc),rows.length,200);
     if(rows.length>sh.length)box.appendChild(el('div','cnt','Показаны первые 200 из '+rows.length+'.'));}
   var one=function(l){return l.price;};
   sec('Новые лоты',added,['Цена','Продавец','Отзывов','Название'],function(l){return[money(l.price)+' ₽',l.seller,String(l.reviews),l.title];},[0,2],one);
@@ -51,7 +51,7 @@ function hSellers(box,res,ia,ib){
   th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
   list.slice(0,500).forEach(function(s){var tr=el('tr');tr.appendChild(el('td','',s.seller));tr.appendChild(el('td','num',String(s.n)));tr.appendChild(el('td','num',money(s.min)+' ₽'));tr.appendChild(el('td','num',String(s.reviews)));
     tr.appendChild(el('td','num',s.growth===null?'—':((s.growth>0?'+':'')+s.growth)));tr.appendChild(el('td','',s.site));tr.appendChild(el('td','',s.tags));tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);box.appendChild(el('div','cnt','Сравнение: '+dayA.date+' → '+dayB.date+'. «—»: продавца не было на странице в день начала.'));
+  t.appendChild(tb);fold5(box,'h-sellers',t,list.length,500);box.appendChild(el('div','cnt','Сравнение: '+dayA.date+' → '+dayB.date+'. «—»: продавца не было на странице в день начала.'));
 }
 function recalcHist(){
   var d=H.d;if(!d)return;var e=$('h-empty'),body=$('h-body');
@@ -61,7 +61,7 @@ function recalcHist(){
   $('h-fact').textContent='Дней в истории: '+d.days.length+' (с '+d.days[0].date+' по '+d.days[d.days.length-1].date+'), снимков всего: '+d.snapshots+'. Цены витрины, не сделки.';
   $('h-est').textContent='Что считать скриптом, решают правила и ваши отметки. Прирост отзывов и метки «новый» — оценка.';
   drawChart($('h-chart'),res);
-  $('h-days').textContent='';$('h-days').appendChild(tbl(['День','Снимок','Лотов (в расчёте)','Продавцов','Мин','Медиана','Макс'],res.slice().reverse().map(function(r){var st=r.st;return[r.day.date,r.day.time,String(r.rows.length),String(r.sellers),st?money(st.min)+' ₽':'—',st?money(st.med)+' ₽':'—',st?money(st.max)+' ₽':'—'];}),[2,3,4,5,6]));
+  $('h-days').textContent='';fold5($('h-days'),'h-days',tbl(['День','Снимок','Лотов (в расчёте)','Продавцов','Мин','Медиана','Макс'],res.slice().reverse().map(function(r){var st=r.st;return[r.day.date,r.day.time,String(r.rows.length),String(r.sellers),st?money(st.min)+' ₽':'—',st?money(st.med)+' ₽':'—',st?money(st.max)+' ₽':'—'];}),[2,3,4,5,6]));
   hDiff($('h-diff'),res,ia,ib);hSellers($('h-sellers'),res,ia,ib);
 }
 function loadHist(){

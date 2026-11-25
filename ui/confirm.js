@@ -61,14 +61,14 @@ function cfRender(){
       ac.appendChild(cfBtn('Подтвердил',function(){var t=cfTime('Время, когда покупатель подтвердил заказ #'+o.id);if(t===null)return;cfCall('/api/confirm/confirm',{id:o.id,at:t}).then(function(r){if(r&&r.warn)say(r.warn);});}));
     }
     tr.appendChild(ac);tb.appendChild(tr);});
-  t.appendChild(tb);box.appendChild(t);
+  t.appendChild(tb);box.appendChild(foldWrap('cf-tbl','Заказы',rows.length,t));
 }
 function cfLog(rows){
   var box=$('cf-log');box.textContent='';
   if(!rows||!rows.length){box.appendChild(el('div','cnt','Записей нет.'));return;}
   var t=tbl(['Время','Заказ','Действие','Подробности','Результат'],rows.slice(0,100).map(function(r){return[r.time.replace('T',' '),'',r.action,r.detail,r.ok?'ок':'отказ'];}));
   Array.prototype.forEach.call(t.querySelectorAll('tbody tr'),function(tr,i){var r=rows[i];if(r&&r.order)tr.children[1].appendChild(ordLink(r.order));});
-  box.appendChild(t);
+  fold5(box,'cf-log',t,rows.length,100);
 }
 $('cf-all').addEventListener('change',cfLoad);
 $('cf-flt').addEventListener('change',cfRender);

@@ -38,3 +38,4 @@ function load(snap){
     render();say('');}).catch(function(e){say(e.message,true);});
 }
 
+foldStatic($('rows').parentNode,'mk-rows','Лоты');
