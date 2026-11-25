@@ -2699,7 +2699,7 @@ def conf_ticket_sent(b):
     return {'ids': ids}
 
 # ---------- проверка чатов: последнее сообщение моё, совпадает с напоминанием, прошло 24 ч ----------
-CHECK_MAX_BUYERS = 30
+CHECK_MAX_BUYERS = 30     # размер ПАРТИИ за один запрос (на Railway запрос не может идти бесконечно); все партии кнопка и автопилот проходят подряд до конца списка
 REMIND_TPL = P('reminder_templates.json')      # тексты ваших напоминаний (шаблоны, не переписка), чтобы узнавать их в чатах
 
 
@@ -2714,7 +2714,7 @@ def tpl_save(template):
     lst = [x for x in tpl_load() if chat_norm(x) != chat_norm(t)]
     write_json_atomic(REMIND_TPL, {'templates': ([t] + lst)[:10]})
 
-CHAT_RES_RU = {'confirmed_admin': 'подтверждён администратором', 'confirmed_buyer': 'подтверждён покупателем',
+CHAT_RES_RU = {'refunded': 'возврат (сообщение FunPay)', 'confirmed_admin': 'подтверждён администратором', 'confirmed_buyer': 'подтверждён покупателем',
                'ok': 'можно писать тикет', 'young': 'ждёт 24 ч', 'problem': 'проблемный', 'no_reminder': 'напомнить',
                'unclear': 'автор сообщения не определён', 'client_last': 'последним писал покупатель (старая проверка)',
                'no_match': 'последнее сообщение не напоминание (старая проверка)', 'no_time': 'время сообщения не разобрано',
@@ -2786,23 +2786,33 @@ def match_hint(templates, text, order_id):
 SYS_CONFIRM_RE = re.compile(r'(Покупатель|Администратор)\s+(.+?)\s+подтвердил\w*\s+успешное\s+выполнение\s+заказа\s+#(\w+)', re.I)
 
 
+SYS_REFUND_RE = re.compile(r'вернул\w*\s+деньги\s+покупателю.*?заказ\w*\s+#(\w+)', re.I)
+
+
 def chat_is_system(m):
     """Системное сообщение FunPay («оповещение»): не сообщение покупателя, сколько бы ссылок на профили в нём ни было.
     Признак: метка «оповещение» в шапке или текст «Покупатель/Администратор … подтвердил успешное выполнение заказа #…»."""
     if 'оповещение' in str(m.get('label', '')):
         return True
-    return SYS_CONFIRM_RE.search(re.sub(r'\s+', ' ', str(m.get('text', '')))) is not None
+    t = re.sub(r'\s+', ' ', str(m.get('text', '')))
+    return SYS_CONFIRM_RE.search(t) is not None or SYS_REFUND_RE.search(t) is not None
 
 
-def chat_confirmed_by(o, msgs):
-    """Есть ли в чате системное сообщение о подтверждении ЭТОГО заказа: 'администратор' | 'покупатель' | ''.
-    Сообщения о других заказах (у покупателя их может быть несколько) не считаются."""
-    found = ''
+def chat_final_notice(o, msgs):
+    """Последнее системное сообщение FunPay по ЭТОМУ заказу: 'администратор' | 'покупатель' (подтверждён) | 'возврат' | ''.
+    Сообщения о других заказах того же покупателя не считаются; если были и подтверждение, и возврат, решает более позднее."""
+    kind = ''
+    oid = str(o['id']).upper()
     for m in msgs:
-        mt = SYS_CONFIRM_RE.search(re.sub(r'\s+', ' ', str(m.get('text', ''))))
-        if mt and mt.group(3).upper() == str(o['id']).upper():
-            found = 'администратор' if mt.group(1).casefold() == 'администратор' else (found or 'покупатель')
-    return found
+        t = re.sub(r'\s+', ' ', str(m.get('text', '')))
+        mt = SYS_CONFIRM_RE.search(t)
+        if mt and mt.group(3).upper() == oid:
+            kind = 'администратор' if mt.group(1).casefold() == 'администратор' else 'покупатель'
+            continue
+        mr = SYS_REFUND_RE.search(t)
+        if mr and mr.group(1).upper() == oid:
+            kind = 'возврат'
+    return kind
 
 
 def conf_judge(o, msgs, templates, now):
@@ -2816,7 +2826,9 @@ def conf_judge(o, msgs, templates, now):
         return 'no_chat', 'в диалоге нет сообщений', None, 'в чате нет сообщений'
     buyer = conf_buyer(o)
     seen = f'просмотрено последних сообщений: {len(msgs)}'
-    who = chat_confirmed_by(o, msgs)
+    who = chat_final_notice(o, msgs)
+    if who == 'возврат':                              # деньги возвращены: заказ не «проблемный», его надо закрыть как возврат
+        return 'refunded', f'в чате сообщение FunPay о возврате денег по этому заказу. {seen}', None, 'возврат (сообщение FunPay в чате)'
     if who:                                           # FunPay сам написал, что заказ подтверждён: это главнее любых выводов по чату
         return ('confirmed_admin' if who == 'администратор' else 'confirmed_buyer',
                 f'в чате сообщение FunPay: заказ подтверждён ({who}). {seen}', None, f'подтверждён: {who} (сообщение FunPay в чате)')
@@ -2950,6 +2962,9 @@ def conf_chat_check(b):
             if not o or o['status'] in CONF_DONE:
                 continue
             before = conf_verdict(o, now)['verdict']
+            if res == 'refunded' and o['status'] != 'refunded':
+                o['status'] = 'refunded'
+                conf_log(oid, 'refund', 'по чату: сообщение FunPay о возврате денег по этому заказу')
             o['chat_check'] = {'at': conf_iso(now), 'result': res, 'text': CHAT_RES_RU[res], 'short': short, 'detail': detail,
                                'msg_at': conf_iso(mt) if mt else None}
             cnt['ok' if res == 'ok' else 'bad'] += 1
@@ -2972,7 +2987,7 @@ def conf_chat_check(b):
                 conf_log(oid, 'chat-ok', 'авто-отметка снята: ' + detail)
         conf_save(d)
         conf_log('', 'chat-check', f'проверено покупателей: {len(buyers) - (1 if stop else 0)}, заказов: {cnt["ok"] + cnt["bad"]}: '
-                 f'подходят {cnt["ok"]}, не подходят {cnt["bad"]} (' + ', '.join(f'{k}: {v}' for k, v in reasons.items()) + ') [проверка v4]' + (f'; не проверено из-за лимита {CHECK_MAX_BUYERS}: {left}' if left else '')
+                 f'подходят {cnt["ok"]}, не подходят {cnt["bad"]} (' + ', '.join(f'{k}: {v}' for k, v in reasons.items()) + ') [проверка v4]' + (f'; не проверено в этой партии (размер партии {CHECK_MAX_BUYERS}): {left}' if left else '')
                  + (f'; сменили статус из-за системных сообщений FunPay: {sum(moved.values())} (' + ', '.join(f'{k}: {v}' for k, v in moved.items()) + ')' if moved else '; из-за системных сообщений статус не менялся')
                  + ('; остановлено: ' + str(stop)[:150] if stop else ''))
     if stop:
@@ -3680,7 +3695,7 @@ def rv_read_stars(b):
 # ---------- поиск подтверждённых заказов по коду страницы заказа ----------
 # Страница /orders/ID/: в заголовке (h1) у закрытого заказа стоит метка «Закрыт», у оплаченного метки нет; блок «Закрыт» даёт время;
 # в чате заказа есть уведомление «Покупатель X подтвердил…» или «Администратор X подтвердил…» (берём только то, где номер заказа наш).
-RV_SCAN_MAX = 40            # страниц заказов за одно нажатие
+RV_SCAN_MAX = 40            # размер ПАРТИИ страниц заказов за один запрос; все партии кнопка и автопилот проходят подряд до конца
 RV_SCAN_DAYS = 14           # неотслеживаемые закрытые заказы берём, если оплачены не раньше N дней назад
 FP_STATUS = {'закрыт': 'closed', 'возврат': 'refund', 'возвращены': 'refund'}
 
@@ -4042,7 +4057,7 @@ def ap_transient(err):
     return bool(re.search(r'Нет связи|Неожиданный ответ HTTP 5\d\d|HTTP 408|Timeout|ConnectionError|URLError|RemoteDisconnected|IncompleteRead|SSLError', err))
 
 
-def ap_until_done(name, fn, note=None, left_of=None, max_passes=30):
+def ap_until_done(name, fn, note=None, left_of=None, max_passes=10 ** 6):
     """Шаг до конца: при сбое повторяет сам (AP_RETRY_WAIT), если осталась недочитанная часть, добирает её следующим проходом.
     Блокировка, капча и перенаправление не повторяются (сессию блокирует guarded). Если за проход ничего не убавилось
     дважды подряд или проходов слишком много, остаток добирается в следующем цикле, тоже сам."""
