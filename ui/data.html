@@ -1,13 +1,14 @@
 <section id="v-data" style="display:none">
 <div class="state" id="d-state">Читаю состояние…</div><div class="sum" id="d-last"></div>
-<div class="bar"><button type="button" id="d-fetch">Обновить</button><span class="cnt">Один запрос страницы категории как гость, без входа. Автоповторов нет.</span></div>
+<div class="bar"><button type="button" class="p" id="d-fetch">Обновить</button><span class="cnt">Один запрос страницы категории как гость, без входа. Автоповторов нет.</span></div>
 <div class="box"><h3 style="margin-top:0">Автоснимок</h3>
 <div class="bar"><label><input type="checkbox" id="a-on"> Делать снимок сам, пока программа открыта</label>
 <label>Пауза, часов: <input type="number" id="a-h" min="1" max="168" style="width:70px"></label><button type="button" id="a-save">Сохранить</button></div>
 <div class="cnt" id="a-state"></div><div id="a-log"></div></div>
-<div class="box"><h3 style="margin-top:0">Резервные копии</h3>
-<div class="cnt">В копию входят отметки, история, заказы, настройки и журналы автопилота (все .json и .csv и папки history, reports, tickets). golden_key.txt не входит. В архиве есть ID покупателей и промокоды наград: храните его так же бережно, как пароль. Копии на сервере лежат рядом с данными: раз в сутки (последние 7), перед каждым импортом и по кнопке. От потери тома защищает только скачанная копия или бэкап тома в Railway.</div>
-<div class="bar" style="margin-top:8px"><button type="button" id="bk-dl">Скачать копию</button><button type="button" id="bk-dlp">Скачать вместе со страницами категории</button><button type="button" id="bk-now">Сделать копию на сервере</button></div>
+<div class="box"><h3 style="margin-top:0">Резервные копии<button type="button" class="hq" data-for="hp-dt-0" aria-expanded="false" title="Пояснение">?</button></h3>
+<div class="hqt" id="hp-dt-0" hidden>В копию входят отметки, история, заказы, настройки и журналы автопилота (все .json и .csv и папки history, reports, tickets). golden_key.txt не входит. В архиве есть ID покупателей и промокоды наград: храните его так же бережно, как пароль. Копии на сервере лежат рядом с данными: раз в сутки (последние 7), перед каждым импортом и по кнопке. От потери тома защищает только скачанная копия или бэкап тома в Railway.</div>
+<div class="cnt">Архив содержит ID покупателей и промокоды: храните его как пароль.</div>
+<div class="bar" style="margin-top:8px"><button type="button" class="p" id="bk-dl">Скачать копию</button><button type="button" id="bk-dlp">Скачать вместе со страницами категории</button><button type="button" id="bk-now">Сделать копию на сервере</button></div>
 <div class="cnt" id="bk-state"></div><div id="bk-list"></div></div>
 <pre class="log" id="d-log" style="display:none"></pre><div class="sum" id="d-note"></div>
 <h3>Снимки страницы</h3><div id="d-snaps"></div></section>
