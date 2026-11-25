@@ -1962,20 +1962,23 @@ def chat_history(node):
     if not items:
         raise SiteStop('Сообщения в диалоге не найдены: пусто или разметка другая. '
                        'Классы на странице (без текста переписки): ' + class_names(soup, ('chat', 'contact')) + '. Пришлите мне этот список.')
-    out, author, mine, label = [], '', False, ''
+    out, author, mine, label, auid = [], '', False, '', ''
     for it in items:
         a = it.select_one('.chat-msg-author-link')
         if it.select_one('.media-user-name') is not None:       # у сообщения есть шапка: метка берётся из неё (или пусто)
             lb = it.select_one('.chat-msg-author-label')
             label = lb.get_text(' ', strip=True).casefold() if lb else ''
+            auid = ''                                           # шапка без ссылки на профиль: ID автора неизвестен
         if a:
             author = a.get_text(' ', strip=True)
             mine = f'/users/{uid}/' in a.get('href', '')
+            mu = re.search(r'/users/(\d+)', a.get('href', ''))
+            auid = mu.group(1) if mu else ''
         t = it.select_one('.chat-msg-text')
         if not t:
             continue
         d = it.select_one('.chat-msg-date')
-        out.append({'author': author, 'mine': mine, 'label': label, 'time': (d.get('title') or d.get_text(strip=True)) if d else '',
+        out.append({'author': author, 'mine': mine, 'uid': auid, 'label': label, 'time': (d.get('title') or d.get_text(strip=True)) if d else '',
                     'text': t.get_text('\n', strip=True)[:3000]})
     return {'messages': out[-60:]}
 
@@ -2478,7 +2481,7 @@ def conf_view(d, o, now=None):
             'overdue': conf_overdue(o, now), 'chat_ok': bool(o.get('chat_ok')), 'dialog_url': o.get('dialog_url', ''),
             'ticket_at': o.get('ticket_at'), 'ticket_sent_at': o.get('ticket_sent_at'), 'note': o.get('note', ''),
             'chat_check': o.get('chat_check'), 'chat_auto': bool(o.get('chat_auto')),
-            'ticket_blockers': conf_blockers(o, now)}
+            'ticket_blockers': conf_blockers(o, now), **conf_verdict(o, now)}
 
 
 def conf_refuse(order_id, action, why):
@@ -2708,8 +2711,9 @@ def tpl_save(template):
     lst = [x for x in tpl_load() if chat_norm(x) != chat_norm(t)]
     write_json_atomic(REMIND_TPL, {'templates': ([t] + lst)[:10]})
 
-CHAT_RES_RU = {'ok': 'подходит', 'young': 'ещё нет 24 ч', 'client_last': 'последним писал покупатель',
-               'no_match': 'последнее сообщение не напоминание', 'no_time': 'время сообщения не разобрано',
+CHAT_RES_RU = {'ok': 'можно писать тикет', 'young': 'ждёт 24 ч', 'problem': 'проблемный', 'no_reminder': 'напомнить',
+               'unclear': 'автор сообщения не определён', 'client_last': 'последним писал покупатель (старая проверка)',
+               'no_match': 'последнее сообщение не напоминание (старая проверка)', 'no_time': 'время сообщения не разобрано',
                'no_buyer': 'нет покупателя', 'no_chat': 'диалог не найден'}
 
 
@@ -2775,23 +2779,86 @@ def match_hint(templates, text, order_id):
     return f'расхождение с позиции {i}: в чате «{body[i:i + 40]}», в тексте напоминания «{exp[i:i + 40]}»'
 
 
-def conf_judge(o, last, templates, now):
-    """(результат, пояснение, время сообщения или None) по последнему сообщению диалога."""
-    if not last['mine']:
-        return 'client_last', 'последнее сообщение в чате от покупателя', None
-    mt = chat_time(last['time'], now)
-    if mt is None:
-        return 'no_time', f'не разобрал время последнего сообщения («{str(last["time"])[:40]}»)', None
-    if not any(remind_matches(t, last['text'], o['id']) for t in templates):
-        return 'no_match', 'последнее сообщение ваше, но текст не совпадает с напоминанием (или в нём нет номера заказа); ' + match_hint(templates, last['text'], o['id']), mt
+def conf_judge(o, msgs, templates, now):
+    """(результат, подробности, время напоминания или None, короткая причина) по сообщениям диалога (последние ~60).
+    Порядок: 1) любое сообщение покупателя, в любое время → problem; 2) нет напоминания → no_reminder;
+    3) от напоминания прошло меньше 24 ч → young; 4) прошло → ok.
+    Покупатель = автор, чей ID (из ссылки на профиль у сообщения) равен ID покупателя заказа. Свои сообщения (в том числе
+    автоответы продавца) и сообщения других авторов (FunPay, поддержка) покупателем не считаются. Если у сообщения не определён
+    автор (в шапке нет ссылки на профиль), заказ не решается: unclear. Текст переписки не сохраняется."""
+    if not msgs:
+        return 'no_chat', 'в диалоге нет сообщений', None, 'в чате нет сообщений'
+    buyer = conf_buyer(o)
+    seen = f'просмотрено последних сообщений: {len(msgs)}'
+    theirs = [m for m in msgs if not m.get('mine') and buyer and m.get('uid') == buyer]
+    if theirs:
+        mt = chat_time(theirs[-1].get('time', ''), now)
+        when = conf_human(conf_iso(mt)) if mt else str(theirs[-1].get('time', ''))[:30]
+        return ('problem', f'в чате сообщений покупателя: {len(theirs)}, последнее {when}. {seen}', None,
+                f'покупатель писал в чат ({when})')
+    unk = [m for m in msgs if not m.get('mine') and not m.get('uid')]
+    if unk:
+        return ('unclear', f'у {len(unk)} сообщ. не определён автор (в шапке нет ссылки на профиль): не отличить сообщение покупателя '
+                           f'от системного. {seen}', None, 'автор сообщения не определён')
     paid = conf_dt(o.get('paid_at'))
-    if paid and mt < paid - datetime.timedelta(minutes=1):
-        return 'no_match', 'напоминание написано раньше оплаты заказа', mt
+    times, untimed = [], 0
+    for m in msgs:
+        if m.get('mine') and any(remind_matches(t, m.get('text', ''), o['id']) for t in templates):
+            mt = chat_time(m.get('time', ''), now)
+            if mt is None:
+                untimed += 1
+            elif not (paid and mt < paid - datetime.timedelta(minutes=1)):
+                times.append(mt)
+    if times:
+        mt, src = max(times), 'напоминание в чате'
+    elif o.get('status') == 'reminded' and conf_dt(o.get('reminder_at')):
+        mt, src = conf_dt(o.get('reminder_at')), 'напоминание из учёта (в просмотренных сообщениях его нет)'
+    elif untimed:
+        return 'no_time', f'время сообщения-напоминания не разобрано. {seen}', None, 'время напоминания не разобрано'
+    else:
+        return 'no_reminder', f'напоминание не найдено в чате и не отмечено в учёте. {seen}', None, 'напоминание не отправлялось'
     hrs = (now - mt).total_seconds() / 3600
     if hrs < CONF_HOURS:
         mins = int((CONF_HOURS - hrs) * 60)
-        return 'young', f'напоминание {conf_human(conf_iso(mt))}, не прошло {CONF_HOURS} ч (осталось {mins // 60} ч {mins % 60} мин)', mt
-    return 'ok', f'последнее сообщение ваше, напоминание {conf_human(conf_iso(mt))}, прошло больше {CONF_HOURS} ч', mt
+        return ('young', f'{src} {conf_human(conf_iso(mt))}, сообщений покупателя нет, не прошло {CONF_HOURS} ч (осталось {mins // 60} ч {mins % 60} мин). {seen}',
+                mt, f'до тикета {mins // 60} ч {mins % 60} мин')
+    return ('ok', f'{src} {conf_human(conf_iso(mt))}, прошло больше {CONF_HOURS} ч, сообщений покупателя нет. {seen}', mt,
+            f'{CONF_HOURS} ч прошло, покупатель не писал')
+
+
+VERDICT_RU = {'problem': 'Проблемный', 'wait': 'Ждёт 24 ч', 'ready': 'Можно писать тикет', 'remind': 'Напомнить',
+              'unclear': 'Автор сообщения не определён', 'unchecked': 'Чат не проверен', 'other': 'Перепроверьте чат', 'done': ''}
+
+
+def conf_verdict(o, now=None):
+    """Статус заказа для таблицы. Порядок: закрыт; «Проблемный» (если нет ручной отметки «Чат проверен»); затем по напоминанию.
+    Ручная отметка «Чат проверен» отменяет только выводы по чату (проблемный, автор не определён), а не таймер 24 ч."""
+    def out(code, short, src=''):
+        return {'verdict': code, 'verdict_ru': VERDICT_RU[code], 'verdict_short': short, 'verdict_src': src}
+    now = now or datetime.datetime.now()
+    if o['status'] in CONF_DONE:
+        return out('done', CONF_STATUS_RU[o['status']])
+    cc = o.get('chat_check') or {}
+    res = cc.get('result', '')
+    manual = bool(o.get('chat_ok')) and not o.get('chat_auto')
+    if not manual:
+        if res in ('problem', 'client_last'):
+            return out('problem', cc.get('short') or 'покупатель писал в чат')
+        if res == 'unclear':
+            return out('unclear', cc.get('short') or 'автор сообщения не определён')
+    if o['status'] != 'reminded' or not conf_deadline(o):
+        return out('remind', 'напоминание не отправлялось')
+    if not conf_overdue(o, now):
+        return out('wait', 'до тикета ' + conf_left(o, now).replace('осталось ', ''), 'вручную' if manual else '')
+    if manual:
+        return out('ready', f'{CONF_HOURS} ч прошло, вы отметили «Чат проверен» вручную', 'вручную')
+    if res == 'ok':
+        return out('ready', f'{CONF_HOURS} ч прошло, покупатель не писал (чат проверен {str(cc.get("at", ""))[5:16].replace("T", " ")})')
+    if not res:
+        return out('unchecked', 'чат ещё не проверялся')
+    if res == 'young':
+        return out('unchecked', 'срок вышел после последней проверки чата: перепроверьте')
+    return out('other', cc.get('short') or cc.get('text', ''))
 
 
 def conf_chat_check(b):
@@ -2816,7 +2883,7 @@ def conf_chat_check(b):
         if is_id(buyer, 15):
             by.setdefault(buyer, []).append(o)
         else:
-            results[o['id']] = ('no_buyer', 'у заказа нет ID покупателя: добавьте его или синхронизируйте с сайтом', None)
+            results[o['id']] = ('no_buyer', 'у заказа нет ID покупателя: добавьте его или синхронизируйте с сайтом', None, 'нет ID покупателя')
     def last_check(buyer):
         return min((o.get('chat_check') or {}).get('at', '') for o in by[buyer])
     order = sorted(by, key=last_check)                # непроверенные первыми, затем проверенные давнее всех: лимит не зацикливается
@@ -2830,24 +2897,24 @@ def conf_chat_check(b):
         except SiteStop as e:
             if str(e).startswith('Сообщения в диалоге не найдены'):
                 for o in by[buyer]:
-                    results[o['id']] = ('no_chat', 'в диалоге с покупателем нет сообщений', None)
+                    results[o['id']] = ('no_chat', 'в диалоге с покупателем нет сообщений', None, 'в чате нет сообщений')
                 continue
             stop = e
             break
         for o in by[buyer]:
-            results[o['id']] = conf_judge(o, msgs[-1], templates, now) if msgs else ('no_chat', 'в диалоге нет сообщений', None)
+            results[o['id']] = conf_judge(o, msgs, templates, now)
         msgs = None                                   # текст переписки дальше не живёт
     cnt = {'ok': 0, 'bad': 0}
     reasons = {}
-    for _res, _d, _m in results.values():
+    for _res, _d, _m, _s in results.values():
         reasons[CHAT_RES_RU[_res]] = reasons.get(CHAT_RES_RU[_res], 0) + 1
     with CONF_LOCK:
         d = conf_load()
-        for oid, (res, detail, mt) in results.items():
+        for oid, (res, detail, mt, short) in results.items():
             o = d['orders'].get(oid)
             if not o or o['status'] in CONF_DONE:
                 continue
-            o['chat_check'] = {'at': conf_iso(now), 'result': res, 'text': CHAT_RES_RU[res], 'detail': detail,
+            o['chat_check'] = {'at': conf_iso(now), 'result': res, 'text': CHAT_RES_RU[res], 'short': short, 'detail': detail,
                                'msg_at': conf_iso(mt) if mt else None}
             cnt['ok' if res == 'ok' else 'bad'] += 1
             if res in ('ok', 'young'):                # время напоминания берём из чата: это факт, а не наша запись
@@ -6875,7 +6942,7 @@ def h_sv1_lots(b):
 
 def h_lots_merge_list(b):
     """Список для вкладки «Слияние лотов»: лоты из заказов и, если просили и есть вход, лоты с профиля аккаунта."""
-    rows, err = sv1_lot_rows(), ''
+    rows, err, loaded = sv1_lot_rows(), '', False
     by = {r['id']: r for r in rows}
     m = lot_map()
     if b.get('offers') is True:
@@ -6886,6 +6953,7 @@ def h_lots_merge_list(b):
             if code != 200:
                 err = 'Лоты аккаунта не загружены: ' + str(res.get('error', 'ошибка'))
             else:
+                loaded = True
                 for r in res['rows']:
                     lid, title = str(r['id']), str(r['title']).strip()[:200]
                     if lid in by:
@@ -6896,7 +6964,7 @@ def h_lots_merge_list(b):
                     rows.append(row)
                     by[lid] = row
     rows.sort(key=lambda r: (r['last'] or '', r['orders']), reverse=True)
-    return 200, {'lots': rows, 'offers_error': err}
+    return 200, {'lots': rows, 'offers_error': err, 'profile_loaded': loaded}
 
 
 def rv_follow_merge(old_title, new_title):

@@ -10,15 +10,17 @@ function cfLoad(){
     cfRender();cfLog(d.log);}).catch(function(e){say(e.message,true);});
 }
 function cfBtn(txt,fn,title){var b=el('button','b',txt);b.type='button';if(title)b.title=title;b.addEventListener('click',fn);return b;}
-function cfCat(o){return !o.chat_check?'none':(o.chat_check.result==='ok'?'ok':'bad');}
+var CF_V=['problem','wait','ready','remind'];
+function cfCat(o){return CF_V.indexOf(o.verdict)>=0?o.verdict:'other';}
 function cfRender(){
   var box=$('cf-tbl');box.textContent='';
-  var f=$('cf-flt').value,cn={ok:0,bad:0,none:0};CF.orders.forEach(function(o){cn[cfCat(o)]++;});
-  var opts=$('cf-flt').options;opts[0].text='Подходят по чату ('+cn.ok+')';opts[1].text='Не подходят ('+cn.bad+')';opts[2].text='Не проверены ('+cn.none+')';opts[3].text='Все ('+CF.orders.length+')';
+  var f=$('cf-flt').value,cn={problem:0,wait:0,ready:0,remind:0,other:0};CF.orders.forEach(function(o){cn[cfCat(o)]++;});
+  var opts=$('cf-flt').options,nm={all:'Все',problem:'Проблемный',wait:'Ждёт 24 ч',ready:'Можно писать тикет',remind:'Напомнить',other:'Прочие'};
+  for(var oi=0;oi<opts.length;oi++){var ov=opts[oi].value;opts[oi].text=nm[ov]+' ('+(ov==='all'?CF.orders.length:cn[ov])+')';}
   var all=CF.orders,rows=f==='all'?all:all.filter(function(o){return cfCat(o)===f;});
-  if(!rows.length){box.appendChild(el('div','empty',!all.length?'Заказов в учёте нет. Добавьте вручную или нажмите «Синхронизировать с сайтом».':(f==='ok'?'Подходящих заказов нет. Нажмите «Проверить чаты»: список заполнится заказами, где последнее сообщение ваше, оно совпадает с напоминанием и прошло 24 часа.':'В этой категории заказов нет.')));return;}
+  if(!rows.length){box.appendChild(el('div','empty',!all.length?'Заказов в учёте нет. Добавьте вручную или нажмите «Синхронизировать с сайтом».':(f==='all'?'Заказов в учёте нет.':'В этой категории заказов нет.')));return;}
   var t=el('table'),th=el('thead'),hr=el('tr');
-  ['','Заказ','Лот','Сумма','Статус','Таймер','Проверка чата','Чат проверен','Тикет','Заметка','Действия'].forEach(function(h){hr.appendChild(el('th','',h));});
+  ['','Заказ','Лот','Сумма','Учёт','Таймер','Статус','Чат проверен','Тикет','Заметка','Действия'].forEach(function(h){hr.appendChild(el('th','',h));});
   th.appendChild(hr);t.appendChild(th);var tb=el('tbody');
   rows.forEach(function(o){
     var tr=el('tr'),done=(o.status==='confirmed'||o.status==='refunded');
@@ -27,9 +29,18 @@ function cfRender(){
     var ol=el('td','id');ol.appendChild(ordLink(o.id));tr.appendChild(ol);tr.appendChild(el('td','',o.lot||'—'));tr.appendChild(el('td','num',o.price?String(o.price):'—'));
     var st=o.status_ru+(o.status==='confirmed'&&o.confirmed_by?' ('+o.confirmed_by+')':'');tr.appendChild(el('td','',st));
     tr.appendChild(el('td',o.overdue?'warn':'',o.left||'—'));
-    var cc=o.chat_check,ctd=el('td','cnt',cc?(cc.text+' ('+cc.at.replace('T',' ').slice(0,16)+')'):'не проверен');if(cc)ctd.title=cc.detail;if(cc&&cc.result!=='ok'){ctd.className='warn cnt';var dd=el('div','cnt',cc.detail);dd.style.maxWidth='360px';ctd.appendChild(dd);}tr.appendChild(ctd);
+    var ctd=el('td');
+    if(o.verdict==='done'){ctd.appendChild(el('div','cnt','—'));}
+    else{
+      var vb=el('div','sv',o.verdict_ru);vb.style.fontSize='14px';vb.style.color={problem:'var(--x)',unclear:'var(--x)',ready:'var(--s)',wait:'var(--n)',remind:'var(--acc)'}[o.verdict]||'';ctd.appendChild(vb);
+      ctd.appendChild(el('div','cnt',(o.verdict_short||'')+(o.verdict_src?' · '+o.verdict_src:'')));
+      var cc=o.chat_check;
+      if(cc&&cc.detail){var more=el('a','ol','детали');more.href='javascript:void(0)';var dv=el('div','cnt',cc.detail+' (проверка '+cc.at.replace('T',' ').slice(0,16)+')');dv.style.display='none';dv.style.maxWidth='360px';
+        more.addEventListener('click',function(){dv.style.display=dv.style.display==='none'?'block':'none';});ctd.appendChild(more);ctd.appendChild(dv);}
+    }
+    tr.appendChild(ctd);
     var c6=el('td'),ck=el('input');ck.type='checkbox';ck.checked=o.chat_ok;ck.disabled=done;
-    ck.title='Ваша отметка: чат проверен, услуга оказана, покупатель однозначно забыл подтвердить. Программа чат не читает.';
+    ck.title='Ручное переопределение: вы сами проверили чат. Снимает статус «Проблемный» и «Автор не определён», таймер 24 ч не отменяет.';
     ck.addEventListener('change',function(){
       if(ck.checked){
         if(!confirm('Подтверждаете: вы сами проверили чат заказа #'+o.id+', услуга оказана, покупатель однозначно просто забыл подтвердить?')){ck.checked=false;return;}
@@ -45,6 +56,7 @@ function cfRender(){
     var ac=el('td','btns');
     if(!done){
       if(o.status==='paid')ac.appendChild(cfBtn('Выдан',function(){var t=cfTime('Время выдачи заказа #'+o.id);if(t===null)return;cfCall('/api/confirm/deliver',{id:o.id,at:t});}));
+      if(o.verdict==='remind')ac.appendChild(cfBtn('Напомнить',function(){show('remind');},'Открывает вкладку «Напоминания». Сообщение отсюда не отправляется.'));
       ac.appendChild(cfBtn(o.status==='reminded'?'Напомнил ещё раз':'Напомнил',function(){var t=cfTime('Время напоминания покупателю по заказу #'+o.id+' (запускает таймер '+24+' ч)');if(t===null)return;cfCall('/api/confirm/remind',{id:o.id,at:t});}));
       ac.appendChild(cfBtn('Подтвердил',function(){var t=cfTime('Время, когда покупатель подтвердил заказ #'+o.id);if(t===null)return;cfCall('/api/confirm/confirm',{id:o.id,at:t}).then(function(r){if(r&&r.warn)say(r.warn);});}));
     }
@@ -63,9 +75,9 @@ $('cf-flt').addEventListener('change',cfRender);
 $('cf-chk').addEventListener('click',function(){
   var tpl=($('cf-tpl').value||'').trim();
   if(!tpl){say('Впишите текст напоминания в поле над таблицей.',true);return;}
-  if(!confirm('Проверить чаты: один запрос на каждого покупателя (до 30 за раз), с паузами. Читается только последнее сообщение, переписка не сохраняется, ничего не отправляется. Сравнивать с текстом из поля над таблицей. Продолжить?'))return;
+  if(!confirm('Проверить чаты: один запрос на каждого покупателя (до 30 за раз), с паузами. Читаются последние сообщения (до 60), переписка не сохраняется, ничего не отправляется. Сравнивать с текстом из поля над таблицей. Продолжить?'))return;
   $('cf-chk').disabled=true;say('Проверяю чаты, это может занять несколько минут…');
-  ap('/api/confirm/chat-check',{template:tpl}).then(function(d){$('cf-chk').disabled=false;$('cf-flt').value='ok';say('Проверено покупателей: '+d.buyers+'. Подходят: '+d.ok+', не подходят: '+d.bad+(d.reasons?' ('+Object.keys(d.reasons).map(function(k){return k+': '+d.reasons[k];}).join(', ')+')':'')+'.'+(d.left?' Не проверено из-за лимита: '+d.left+' покупателей, нажмите ещё раз.':''));return cfLoad();})
+  ap('/api/confirm/chat-check',{template:tpl}).then(function(d){$('cf-chk').disabled=false;$('cf-flt').value='all';say('Проверено покупателей: '+d.buyers+'. Подходят: '+d.ok+', не подходят: '+d.bad+(d.reasons?' ('+Object.keys(d.reasons).map(function(k){return k+': '+d.reasons[k];}).join(', ')+')':'')+'.'+(d.left?' Не проверено из-за лимита: '+d.left+' покупателей, нажмите ещё раз.':''));return cfLoad();})
    .catch(function(e){$('cf-chk').disabled=false;say(e.message,true);cfLoad();});});
 $('cf-reload').addEventListener('click',cfLoad);
 $('cf-add').addEventListener('click',function(){

@@ -3,11 +3,11 @@
 <div class="bar" style="margin-top:8px"><label><input type="checkbox" id="cf-all"> Показывать закрытые</label>
 <button type="button" id="cf-reload">Обновить список</button>
 <button type="button" id="cf-sync" title="Один запрос страницы /orders/trade, нужен вход на вкладке «Аккаунт»">Синхронизировать с сайтом</button>
-<button type="button" id="cf-chk" title="Открывает чат с каждым покупателем и читает только последнее сообщение">Проверить чаты</button>
-<label>Показывать: <select id="cf-flt"><option value="ok">Подходят по чату</option><option value="bad">Не подходят</option><option value="none">Не проверены</option><option value="all">Все</option></select></label></div>
+<button type="button" id="cf-chk" title="Открывает чат с каждым покупателем и смотрит последние сообщения (до 60)">Проверить чаты</button>
+<label>Показывать: <select id="cf-flt"><option value="all">Все</option><option value="problem">Проблемный</option><option value="wait">Ждёт 24 ч</option><option value="ready">Можно писать тикет</option><option value="remind">Напомнить</option><option value="other">Прочие</option></select></label></div>
 <div class="fh" style="margin-top:8px">Текст вашего напоминания (как вы его отправляли; вместо номеров заказов поставьте {order})</div>
 <textarea id="cf-tpl" rows="3" class="full" maxlength="1000"></textarea>
-<div class="cnt">«Проверить чаты»: программа открывает чат с каждым покупателем и смотрит только последнее сообщение. Подходит заказ, если последнее сообщение ваше, оно совпадает с текстом напоминания (из поля выше, с номером заказа) и написано 24 часа назад или раньше. Если последним писал покупатель или ещё нет 24 часов, заказ не подходит. Текст переписки не сохраняется, ничего не отправляется.</div></div>
+<div class="cnt">Статус и причина показаны в таблице, подробности по ссылке «детали». Текст переписки не сохраняется, ничего не отправляется.</div></div>
 <div class="box" style="margin-top:10px"><h3>Добавить заказ вручную</h3>
 <div class="bar"><input type="text" id="cf-nid" placeholder="Номер заказа, например AB12CD34" style="width:220px">
 <input type="text" id="cf-nlot" placeholder="Лот (необязательно)" style="width:240px">

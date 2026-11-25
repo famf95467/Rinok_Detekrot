@@ -1,11 +1,11 @@
 <section id="v-merge" style="display:none">
 <div class="box"><div class="cnt">Если лот переименовали и у него сменился ID, программа видит два разных лота: статистика и правила «слетают». Здесь вы говорите: «этот новый лот = тот старый». После слияния заказы, себестоимость, дата акции и награды старого лота считаются за новым, а в правило наград и текста добавляется название нового лота. Заказы не удаляются, слияние можно отменить кнопкой «Разъединить» (добавленный в правило фрагмент названия при этом остаётся).</div>
 <div class="bar" style="margin-top:8px"><button type="button" id="mg-load">Обновить список</button>
-<label><input type="checkbox" id="mg-offers"> добавить мои лоты с аккаунта (нужен вход, один запрос профиля)</label>
+<label><input type="checkbox" id="mg-offers" checked> добавить мои лоты с аккаунта (нужен вход, один запрос профиля)</label>
 <input type="text" id="mg-q" placeholder="Поиск по названию или ID" style="max-width:280px"></div></div>
-<div class="box"><h3 style="margin-top:0">Объединить</h3>
-<div class="fh">Старые лоты: отметьте один или несколько (их заказы и настройки перейдут к новому)</div><div class="slist" id="mg-from" style="max-height:260px"></div><div class="cnt" id="mg-cnt"></div>
-<div class="fh">Новый лот (он останется)</div><select id="mg-to" class="full"></select>
+<div class="box"><h3 style="margin-top:0">Объединить: старый лот → новый</h3>
+<div class="cnt">Галочкой отметьте старый лот (второй список), кружком выберите новый (первый список).</div>
 <div class="bar"><button type="button" id="mg-go">Объединить</button></div><div class="cnt" id="mg-res"></div></div>
-<h3>Уже объединены</h3><div id="mg-done"></div>
-<h3>Все лоты</h3><div id="mg-all"></div></section>
+<h3>Сейчас в профиле</h3><div id="mg-a"></div>
+<h3>Были раньше, сейчас нет</h3><div id="mg-b"></div>
+<h3>Уже объединены</h3><div id="mg-done"></div></section>
