@@ -19,7 +19,7 @@ function show(v){
   TABS.forEach(function(t){$('v-'+t[0]).style.display=(t[0]===v)?'block':'none';$('tab-'+t[0]).className='tab'+(t[0]===v?' cur':'');});
   $('bar-snap').style.display=(v==='marks'||v==='prices')?'flex':'none';
   if(v==='home')homeLoad();if(v==='spy')spyLoad();if(v==='prices')loadPrices();if(v==='data')loadData();if(v==='hist')loadHist();if(v==='acc')loadAcc();
-  if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='auto'){apLoad(true);tgLoad();}if(v==='merge')mgLoad();if(v==='plugins')plLoad();if(v==='sales')msLoad(true);if(v==='stats')needLogin('st',function(){stReport();sv1All();});
+  if(v==='chat')needLogin('ch',chatList);if(v==='remind')needLogin('rm',function(){});if(v==='confirm')cfLoad();if(v==='review')rvLoad();if(v==='auto'){apLoad(true);tgLoad();api('/api/acc/status').then(function(s){if(s.cloud&&$('im-box'))$('im-box').style.display='block';}).catch(function(){});}if(v==='merge')mgLoad();if(v==='plugins')plLoad();if(v==='sales')msLoad(true);if(v==='stats')needLogin('st',function(){stReport();sv1All();});
   try{history.replaceState(null,'','#'+v);}catch(e){}
 }
 function refresh(){load($('snap').value).then(function(){if(view==='prices')loadPrices();});}

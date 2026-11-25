@@ -32,5 +32,8 @@
 <div class="steps"><div class="stp"><span class="sn">Шаг 1</span><button type="button" class="p" id="tg-save">Сохранить</button></div><span class="sar">→</span><div class="stp"><span class="sn">Шаг 2</span><button type="button" id="tg-test">Отправить тест</button></div></div></div>
 <h3>Последний цикл</h3><div id="ap-steps"></div>
 <h3>Журнал автопилота</h3><div id="ap-log"></div>
+<div id="im-box" class="box" style="max-width:540px;display:none"><h3 style="margin-top:0">Импорт данных с ПК</h3>
+<div class="cnt">Один раз после первого запуска: выберите zip из папки программы (json, csv, history, reports, tickets). golden_key.txt пропускается. Совпадающие файлы заменяются. После импорта перезапустите сервис в Railway.</div>
+<div class="bar" style="margin-top:10px"><input type="file" id="im-file" accept=".zip"><button type="button" id="im-go">Загрузить</button></div><div class="cnt" id="im-res"></div></div>
 </section>
 
