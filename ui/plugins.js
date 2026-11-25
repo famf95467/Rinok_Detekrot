@@ -65,6 +65,77 @@ function plSettings(root,d,st){
   if((st.buttons||[]).length)bx.appendChild(bar);
   root.appendChild(bx);
 }
+/* 3.5 Панель плагина: сверху ежедневное, ниже сворачиваемый блок «Настройки плагина». Группы приходят из plugin.py (ключ group). Без ключа: форма идёт в ежедневную часть, настройки в «общие». */
+function plForm(d,f,parent){
+  var bx=el('div','box');bx.appendChild(el('div','sv',f.title));if(f.help)bx.appendChild(el('div','cnt',f.help));
+  var ed=f.kind==='editor';
+  var i=(f.kind==='longtext'||ed)?el('textarea','full'):el('input','full');
+  if(ed){i.rows=14;i.value=f.value||'';i.spellcheck=false;i.style.fontFamily='Consolas,monospace';}
+  else if(f.kind==='longtext'){i.rows=4;}else{i.type=f.kind==='secret'?'password':'text';}
+  i.autocomplete='off';if(f.label)i.placeholder=f.label;bx.appendChild(i);
+  var b=el('button','',f.button);b.type='button';
+  b.addEventListener('click',function(){
+    if(ed){if(!i.value.trim()&&!confirm('Поле пустое: из списка будут удалены ВСЕ ящики (кроме нужных открытым заказам). Продолжить?'))return;plAct(d.id,f.action,plMerge(f.data,{value:i.value}));return;}
+    if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,plMerge(f.data,{value:v}));});
+  bx.appendChild(b);parent.appendChild(bx);
+}
+/* «Новый пул»: компактная строка с пунктирной рамкой, чтобы не путать с токеном и профилем */
+function plFormCompact(d,f,parent){
+  var w=el('div');w.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;margin:0 0 10px;border:1px dashed var(--acc);border-radius:var(--r);background:var(--card2)';
+  var t=el('span','',f.title);t.style.cssText='font-weight:600;font-size:13px';w.appendChild(t);
+  var i=el('input');i.type='text';i.autocomplete='off';i.maxLength=24;i.style.width='200px';if(f.label)i.placeholder=f.label;w.appendChild(i);
+  var b=el('button','',f.button);b.type='button';
+  b.addEventListener('click',function(){if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,plMerge(f.data,{value:v}));});
+  w.appendChild(b);
+  if(f.help){var h=el('div','cnt',f.help);h.style.flexBasis='100%';w.appendChild(h);}
+  parent.appendChild(w);
+}
+function plTable(root,d,t,ti){
+  if(!t.rows.length){root.appendChild(el('h3','',t.title));root.appendChild(el('div','empty','Пока пусто.'));return;}
+  var tb=el('table'),th=el('thead'),hr=el('tr');t.columns.concat(['']).forEach(function(c){hr.appendChild(el('th','',c));});th.appendChild(hr);tb.appendChild(th);
+  var bd=el('tbody');t.rows.forEach(function(r){var tr=el('tr');r.cells.forEach(function(c){
+      if(c&&typeof c==='object'&&c.select){
+        var td0=el('td'),sl=el('select'),cs=c.select;
+        cs.options.forEach(function(o){var op=el('option','',o.l);op.value=o.v;if(o.v===cs.value)op.selected=true;sl.appendChild(op);});
+        sl.addEventListener('change',function(){sl.disabled=true;plAct(d.id,cs.action,plMerge(cs.data,{value:sl.value})).then(function(){sl.disabled=false;});});
+        td0.appendChild(sl);tr.appendChild(td0);}
+      else tr.appendChild(el('td','',String(c)));});
+    var td=el('td');r.buttons.forEach(function(b){td.appendChild(plBtn(d.id,b));});tr.appendChild(td);bd.appendChild(tr);});
+  tb.appendChild(bd);
+  root.appendChild(foldWrap('pl-'+d.id+'-t'+ti,t.title,t.rows.length,tb));
+}
+function plPart(root,title,cap){
+  var h=el('h3','',title);h.style.cssText='font-size:16px;margin:22px 0 4px;padding-top:10px;border-top:1px solid var(--line)';root.appendChild(h);
+  if(cap)root.appendChild(el('div','cnt',cap));
+  var c=el('div');c.style.marginTop='8px';root.appendChild(c);return c;
+}
+function plSettingsBlock(root,d,p){
+  var forms=p.forms||[],blocks=p.blocks||[];
+  var connect=forms.filter(function(f){return f.group==='connect';});
+  var profForms=forms.filter(function(f){return f.group==='profiles';});
+  var profBlocks=blocks.filter(function(b){return b.group==='profiles';});
+  var otherBlocks=blocks.filter(function(b){return b.group!=='profiles';});
+  if(!connect.length&&!p.settings&&!profForms.length&&!blocks.length)return;
+  var key='pl_'+d.id+'_settings',saved=lsGet(key);
+  var open=saved===null?!!p.settings_open:saved==='1';
+  var dt=document.createElement('details');dt.open=open;dt.style.marginTop='22px';
+  var sm=document.createElement('summary');sm.textContent='Настройки плагина';sm.style.cssText='cursor:pointer;font:600 16px/1.3 system-ui,"Segoe UI",Arial,sans-serif;padding:6px 0';
+  sm.addEventListener('click',function(){setTimeout(function(){lsSet(key,dt.open?'1':'0');},0);});
+  dt.appendChild(sm);
+  var body=el('div');dt.appendChild(body);
+  if(connect.length){var c1=plPart(body,'Подключение','Токен SmakMail API: без него плагин не получает письма.');connect.forEach(function(f){plForm(d,f,c1);});}
+  if(p.settings||otherBlocks.length){
+    var c2=plPart(body,'Настройки','Выбор лотов, автоотправка адреса и ссылки, команда, интервалы, шаблон ссылки и стандартные тексты.');
+    if(p.settings)plSettings(c2,d,p.settings);
+    otherBlocks.forEach(function(bk){c2.appendChild(el('h3','',bk.title));plSettings(c2,d,bk);});
+  }
+  if(profForms.length||profBlocks.length){
+    var c3=plPart(body,'Профили текстов','Свои тексты и шаблон ссылки для отдельных лотов. Профиль назначается лоту в таблице «Правила по лотам».');
+    profForms.forEach(function(f){plForm(d,f,c3);});
+    profBlocks.forEach(function(bk){c3.appendChild(el('h3','',bk.title));plSettings(c3,d,bk);});
+  }
+  root.appendChild(dt);
+}
 function plPanel(id){
   PLG.cur=id;plSetBtns();
   return api('/api/plugins/panel?id='+encodeURIComponent(id)).then(function(d){
@@ -74,36 +145,17 @@ function plPanel(id){
     if(p.error)root.appendChild(el('div','state bad',p.error));
     (p.warnings||[]).forEach(function(w){root.appendChild(el('div','state bad',w));});
     if(p.status){root.appendChild(tbl(['Показатель','Значение'],p.status.map(function(r){return [String(r[0]),String(r[1])];})));}
-    if(p.settings){root.appendChild(el('h3','','Настройки'));plSettings(root,d,p.settings);}
-    (p.blocks||[]).forEach(function(bk){root.appendChild(el('h3','',bk.title));plSettings(root,d,bk);});
-    (p.forms||[]).forEach(function(f){
-      var bx=el('div','box');bx.appendChild(el('div','sv',f.title));if(f.help)bx.appendChild(el('div','cnt',f.help));
-      var ed=f.kind==='editor';
-      var i=(f.kind==='longtext'||ed)?el('textarea','full'):el('input','full');
-      if(ed){i.rows=14;i.value=f.value||'';i.spellcheck=false;i.style.fontFamily='Consolas,monospace';}
-      else if(f.kind==='longtext'){i.rows=4;}else{i.type=f.kind==='secret'?'password':'text';}
-      i.autocomplete='off';if(f.label)i.placeholder=f.label;bx.appendChild(i);
-      var b=el('button','',f.button);b.type='button';
-      b.addEventListener('click',function(){
-        if(ed){if(!i.value.trim()&&!confirm('Поле пустое: из списка будут удалены ВСЕ ящики (кроме нужных открытым заказам). Продолжить?'))return;plAct(d.id,f.action,plMerge(f.data,{value:i.value}));return;}
-        if(!i.value.trim())return;var v=i.value;i.value='';plAct(d.id,f.action,plMerge(f.data,{value:v}));});
-      bx.appendChild(b);root.appendChild(bx);});
+    var forms=p.forms||[],grouped=['connect','profiles','mailboxes','newpool'];
+    forms.filter(function(f){return f.group==='mailboxes';}).forEach(function(f){plForm(d,f,root);});
+    forms.filter(function(f){return grouped.indexOf(f.group)<0;}).forEach(function(f){plForm(d,f,root);});
+    forms.filter(function(f){return f.group==='newpool';}).forEach(function(f){plFormCompact(d,f,root);});
     if((p.buttons||[]).length){var bar=el('div','bar');p.buttons.forEach(function(b){bar.appendChild(plBtn(d.id,b));});root.appendChild(bar);}
-    (p.tables||[]).forEach(function(t,ti){
-      if(!t.rows.length){root.appendChild(el('h3','',t.title));root.appendChild(el('div','empty','Пока пусто.'));return;}
-      var tb=el('table'),th=el('thead'),hr=el('tr');t.columns.concat(['']).forEach(function(c){hr.appendChild(el('th','',c));});th.appendChild(hr);tb.appendChild(th);
-      var bd=el('tbody');t.rows.forEach(function(r){var tr=el('tr');r.cells.forEach(function(c){
-          if(c&&typeof c==='object'&&c.select){
-            var td0=el('td'),sl=el('select'),cs=c.select;
-            cs.options.forEach(function(o){var op=el('option','',o.l);op.value=o.v;if(o.v===cs.value)op.selected=true;sl.appendChild(op);});
-            sl.addEventListener('change',function(){sl.disabled=true;plAct(d.id,cs.action,plMerge(cs.data,{value:sl.value})).then(function(){sl.disabled=false;});});
-            td0.appendChild(sl);tr.appendChild(td0);}
-          else tr.appendChild(el('td','',String(c)));});
-        var td=el('td');r.buttons.forEach(function(b){td.appendChild(plBtn(d.id,b));});tr.appendChild(td);bd.appendChild(tr);});
-      tb.appendChild(bd);root.appendChild(foldWrap('pl-'+d.id+'-t'+ti,t.title,t.rows.length,tb));});
+    (p.tables||[]).forEach(function(t,ti){plTable(root,d,t,ti);});
     root.appendChild(el('h3','','Журнал плагина'));
     if(!d.log.length)root.appendChild(el('div','empty','Журнал пуст.'));
-    else fold5(root,'pl-'+d.id+'-log',tbl(['Время','Итог','Событие'],d.log.map(function(l){return [l.time.replace('T',' '),l.ok?'ок':'ошибка',l.text];})));
+    else{var lt=tbl(['Время','Итог','Событие'],d.log.map(function(l){return [l.time.replace('T',' '),l.ok?'ок':'ошибка',l.text];}));
+      fold5(root,'pl-'+d.id+'-log',lt);}
+    plSettingsBlock(root,d,p);
   }).catch(function(e){say(e.message,true);});
 }
 plTabName();
