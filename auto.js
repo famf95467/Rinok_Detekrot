@@ -12,9 +12,9 @@ function apFill(st,force){
   $('ap-resume').style.display=st.paused?'inline-block':'none';
   var box=$('ap-steps');box.textContent='';
   if(!st.steps.length)box.appendChild(el('div','cnt','Цикл ещё не выполнялся: первый запуск через ~45 секунд после старта программы.'));
-  else box.appendChild(tbl(['Шаг','Результат'],st.steps.map(function(x){return [x.name+(x.ok?'':' (!)'),x.text];})));
+  else fold5(box,'ap-steps',tbl(['Шаг','Результат'],st.steps.map(function(x){return [x.name+(x.ok?'':' (!)'),x.text];})));
   var lg=$('ap-log');lg.textContent='';
-  if(st.log.length)lg.appendChild(tbl(['Время','Шаг','Результат'],st.log.map(function(x){return [x.time.replace('T',' '),x.step,(x.ok?'':'(!) ')+x.text];})));
+  if(st.log.length)fold5(lg,'ap-log',tbl(['Время','Шаг','Результат'],st.log.map(function(x){return [x.time.replace('T',' '),x.step,(x.ok?'':'(!) ')+x.text];})));
 }
 var AP_DIRTY=false;
 function apLoad(force){return api('/api/autopilot/status').then(function(st){apFill(st,force);apBanner(st);}).catch(function(e){say(e.message,true);});}
@@ -35,24 +35,27 @@ function apValid(){
   return '';
 }
 function apAnySend(){return AP_SEND.some(function(p){return $(p[0]).checked;});}
+function apLimOff(){var v=$('ap-max').value.trim();return v!==''&&Number(v)===0;}   // пустое поле не равно нулю
+function apUndirty(){AP_DIRTY=AP_SAVING||AP_T!==null;}   // после отказа поля снова обновляются с сервера, если нет других несохранённых правок
 function apGuard(id){
-  var n=$(id),lim=Number($('ap-max').value)===0;
+  var n=$(id),lim=apLimOff();
   if(AP_SEND.some(function(p){return p[0]===id;})&&n.checked){
     var name=AP_SEND.filter(function(p){return p[0]===id;})[0][1];
     if(id==='ap-refund')name+=' при оценке ниже '+$('ap-rbelow').value+(Number($('ap-rmax').value)>0?' (сумма до '+$('ap-rmax').value+' ₽)':' (сумма без ограничения)')+'. Деньги уходят покупателю, отменить нельзя';
-    if(!confirm('Включить автоотправку: '+name+'?\nСообщения будут уходить покупателям сами, без подтверждения, пока программа открыта.'+(lim?'\nЛимит сообщений за цикл снят: уйдут ВСЕ готовые (по возвратам остаётся не больше 3 за цикл).':''))){n.checked=false;return false;}
+    if(!confirm('Включить автоотправку: '+name+'?\nСообщения будут уходить покупателям сами, без подтверждения, пока программа открыта.'+(lim?'\nЛимит сообщений за цикл снят: уйдут ВСЕ готовые (по возвратам остаётся не больше 3 за цикл).':''))){n.checked=false;apUndirty();return false;}
   }
   if((id==='ap-rbelow'||id==='ap-rmax')&&$('ap-refund').checked){
     if(!confirm('Изменить условия автовозврата? Сейчас: оценка ниже '+$('ap-rbelow').value+', сумма '+(Number($('ap-rmax').value)>0?'до '+$('ap-rmax').value+' ₽':'без ограничения')+'. Деньги уходят покупателю, отменить нельзя.')){
-      $('ap-rbelow').value=AP_LAST.refund_below;$('ap-rmax').value=AP_LAST.refund_max_price;return false;}
+      $('ap-rbelow').value=AP_LAST.refund_below;$('ap-rmax').value=AP_LAST.refund_max_price;apUndirty();return false;}
   }
   if(id==='ap-max'&&lim&&apAnySend()){
-    if(!confirm('Снять лимит сообщений за цикл? Уйдут ВСЕ готовые сообщения (по возвратам остаётся не больше 3 за цикл).')){$('ap-max').value=AP_LAST.max_sends;return false;}
+    if(!confirm('Снять лимит сообщений за цикл? Уйдут ВСЕ готовые сообщения (по возвратам остаётся не больше 3 за цикл).')){$('ap-max').value=AP_LAST.max_sends;apUndirty();return false;}
   }
   return true;
 }
 function apSchedule(delay){AP_VER++;AP_DIRTY=true;clearTimeout(AP_T);AP_T=setTimeout(apAuto,delay);}
 function apAuto(){
+  AP_T=null;
   if(AP_SAVING){AP_AGAIN=true;return;}
   var bad=apValid(),tag=$('ap-saved');
   if(bad){tag.textContent='Не сохранено: '+bad;tag.className='cnt warn';return;}
