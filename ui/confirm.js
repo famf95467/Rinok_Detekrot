@@ -75,10 +75,25 @@ $('cf-flt').addEventListener('change',cfRender);
 $('cf-chk').addEventListener('click',function(){
   var tpl=($('cf-tpl').value||'').trim();
   if(!tpl){say('Впишите текст напоминания в поле над таблицей.',true);return;}
-  if(!confirm('Проверить чаты: один запрос на каждого покупателя (до 30 за раз), с паузами. Читаются последние сообщения (до 60), переписка не сохраняется, ничего не отправляется. Сравнивать с текстом из поля над таблицей. Продолжить?'))return;
-  $('cf-chk').disabled=true;say('Проверяю чаты, это может занять несколько минут…');
-  ap('/api/confirm/chat-check',{template:tpl}).then(function(d){$('cf-chk').disabled=false;$('cf-flt').value='all';say('Проверено покупателей: '+d.buyers+'. Подходят: '+d.ok+', не подходят: '+d.bad+(d.reasons?' ('+Object.keys(d.reasons).map(function(k){return k+': '+d.reasons[k];}).join(', ')+')':'')+'.'+(d.moved&&Object.keys(d.moved).length?' Сменили статус из-за системных сообщений FunPay: '+Object.keys(d.moved).map(function(k){return k+': '+d.moved[k];}).join(', ')+'.':'')+(d.left?' Не проверено из-за лимита: '+d.left+' покупателей, нажмите ещё раз.':''));return cfLoad();})
-   .catch(function(e){$('cf-chk').disabled=false;say(e.message,true);cfLoad();});});
+  if(!confirm('Проверить чаты всех покупателей: один запрос на каждого, с паузами, партиями по 30 подряд до конца списка. Читаются последние сообщения (до 60), переписка не сохраняется, ничего не отправляется. Сравнивать с текстом из поля над таблицей. Продолжить?'))return;
+  $('cf-chk').disabled=true;
+  var tot={buyers:0,ok:0,bad:0,reasons:{},moved:{}},pass=0;
+  function add(dst,src){Object.keys(src||{}).forEach(function(k){dst[k]=(dst[k]||0)+src[k];});}
+  function done(msg,bad){$('cf-chk').disabled=false;$('cf-flt').value='all';say(msg,bad);return cfLoad();}
+  function summary(left){
+    var rs=Object.keys(tot.reasons).map(function(k){return k+': '+tot.reasons[k];}).join(', ');
+    var mv=Object.keys(tot.moved).map(function(k){return k+': '+tot.moved[k];}).join(', ');
+    return 'Проверено покупателей: '+tot.buyers+'. Подходят: '+tot.ok+', не подходят: '+tot.bad+(rs?' ('+rs+')':'')+'.'+(mv?' Сменили статус из-за системных сообщений FunPay: '+mv+'.':'')+(left?' Не проверено: '+left+' покупателей, нажмите ещё раз.':'');
+  }
+  (function next(){
+    pass++;say('Проверяю чаты, партия '+pass+(tot.buyers?' (уже проверено '+tot.buyers+')':'')+', это может занять несколько минут…');
+    ap('/api/confirm/chat-check',{template:tpl}).then(function(d){
+      tot.buyers+=d.buyers;tot.ok+=d.ok;tot.bad+=d.bad;add(tot.reasons,d.reasons);add(tot.moved,d.moved);
+      if(d.left>0&&d.buyers>0){return cfLoad().then(next);}
+      return done(summary(d.left));
+    }).catch(function(e){
+      $('cf-chk').disabled=false;say((tot.buyers?'Остановилось после '+tot.buyers+' проверенных покупателей. ':'')+e.message,true);cfLoad();});
+  })();});
 $('cf-reload').addEventListener('click',cfLoad);
 $('cf-add').addEventListener('click',function(){
   ap('/api/confirm/add',{id:$('cf-nid').value,lot:$('cf-nlot').value,price:$('cf-nprice').value,buyer:$('cf-nbuyer').value,at:$('cf-nat').value}).then(function(){

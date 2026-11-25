@@ -150,13 +150,21 @@ function rvSend(o){
     return rvLoad().then(function(){return r;});});
 }
 function rvScan(){
-  if(!confirm('Найти подтверждённые заказы по коду страниц заказов? Это 1 запрос списка заказов и до 40 запросов страниц заказов, по одному с паузой. Ничего не отправляется покупателям. Если заказ у нас помечен подтверждённым, а на странице он не «Закрыт», пометка будет снята.'))return;
-  $('rv-scan').disabled=true;say('Ищу подтверждённые заказы по страницам… это может занять около минуты.');
-  ap('/api/review/scan').then(function(r){
-    say('Проверено страниц: '+r.checked+'. Новых подтверждённых: '+r.confirmed+', уточнено: '+r.corrected+', снято подтверждение (на странице не «Закрыт»): '+r.reverted+
-      ', возвратов: '+r.refunded+', не разобрано: '+r.unclear+', оценок прочитано: '+r.stars+'.'+(r.left?' Осталось проверить: '+r.left+', нажмите ещё раз.':''),r.unclear>0);
-    return rvLoad();
-  }).catch(function(e){say(e.message,true);rvLoad();}).then(function(){$('rv-scan').disabled=false;});
+  if(!confirm('Найти подтверждённые заказы по коду страниц заказов? Запросы страниц заказов идут по одному с паузой, партиями до конца списка. Ничего не отправляется покупателям. Если заказ у нас помечен подтверждённым, а на странице он не «Закрыт», пометка будет снята.'))return;
+  $('rv-scan').disabled=true;
+  var t={checked:0,confirmed:0,corrected:0,reverted:0,refunded:0,unclear:0,stars:0},pass=0,prev=null;
+  function fin(){$('rv-scan').disabled=false;}
+  (function next(){
+    pass++;say('Ищу подтверждённые заказы по страницам, партия '+pass+(t.checked?' (проверено '+t.checked+')':'')+'… это может занять несколько минут.');
+    ap('/api/review/scan').then(function(r){
+      Object.keys(t).forEach(function(k){t[k]+=(r[k]||0);});
+      var stuck=(r.left>0&&prev!==null&&r.left>=prev);prev=r.left;
+      if(r.left>0&&r.checked>0&&!stuck){return rvLoad().then(next);}
+      say('Проверено страниц: '+t.checked+'. Новых подтверждённых: '+t.confirmed+', уточнено: '+t.corrected+', снято подтверждение (на странице не «Закрыт»): '+t.reverted+
+        ', возвратов: '+t.refunded+', не разобрано: '+t.unclear+', оценок прочитано: '+t.stars+'.'+(r.left?' Осталось проверить: '+r.left+' (страницы не разобраны, повтор не поможет).':''),t.unclear>0);
+      return rvLoad().then(fin);
+    }).catch(function(e){say((t.checked?'Остановилось после '+t.checked+' проверенных страниц. ':'')+e.message,true);rvLoad();fin();});
+  })();
 }
 function rvReadStars(o){return ap('/api/review/read-stars',{id:o.id});}
 function rvReadAll(){
