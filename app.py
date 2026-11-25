@@ -5354,7 +5354,7 @@ SPY_CACHE_MAX = 400                      # профилей в кэше
 SPY_CACHE_REVIEWS = 300                  # отзывов на профиль в кэше
 SPY_PRIOR_N, SPY_PRIOR_R = 3, 4.0
 SPY_LOCK = threading.Lock()
-SPY = {'running': False, 'cancel': False, 'stage': '', 'done': 0, 'total': 0, 'log': [], 'err': '', 'stopped': '',
+SPY = {'running': False, 'cancel': False, 'stage': '', 'sub': '', 'done': 0, 'total': 0, 'log': [], 'err': '', 'stopped': '',
        'started': '', 'ended': '', 'result': None}
 
 
@@ -5489,15 +5489,17 @@ def spy_more_form(text):
     uid, cont = soup.select_one('input[name=user_id]'), soup.select_one('input[name=continue]')
     if uid is None or cont is None or not cont.get('value'):
         return None
-    return {'user_id': uid.get('value', ''), 'continue': cont.get('value', '')}
+    flt = soup.select_one('input[name=filter]')
+    return {'user_id': uid.get('value', ''), 'continue': cont.get('value', ''), 'filter': flt.get('value', '') if flt is not None else ''}
 
 
-def spy_post(path, fields):
+def spy_post(path, fields, referer=None):
     """Один гостевой POST (подгрузка отзывов, как делает кнопка на странице). Без cookie. Возвращает (статус, итоговый адрес, тело)."""
     data = urllib.parse.urlencode(fields).encode()
     req = urllib.request.Request(SITE_BASE + path, data=data, method='POST', headers={
-        'User-Agent': UA_GUEST, 'Accept': 'application/json, text/html;q=0.9,*/*;q=0.5', 'Accept-Language': 'ru-RU,ru;q=0.9',
+        'User-Agent': UA_GUEST, 'Accept': 'text/html, */*; q=0.01', 'Accept-Language': 'ru-RU,ru;q=0.9',
         'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Origin': SITE_BASE, 'Referer': SITE_BASE + (referer or '/'),
         'Accept-Encoding': 'gzip'})
     try:
         resp = urllib.request.build_opener().open(req, timeout=TIMEOUT)
@@ -5571,10 +5573,13 @@ def spy_profile(uid, pages, note, cache):
         except OSError:
             pass
     got = 1
+    mt = re.search(r'(\d[\d\s\xa0]{0,6})\s*отзыв\w*\s+за\s', text)
+    tot = re.sub(r'\D', '', mt.group(1)) if mt else ''
+    SPY['sub'] = f'отзывов загружено {len(reviews)}' + (f' из {tot}' if tot else '')
     form = spy_more_form(text) if pages > 1 else None
     while form and got < pages and not SPY['cancel']:
         pause(*SPY_PAUSE)
-        s2, f2, b2 = spy_post('/users/reviews', form)
+        s2, f2, b2 = spy_post('/users/reviews', form, referer=path)
         if not spy_check(s2, f2, b2, '/users/reviews'):
             break
         more_html = spy_more_html(b2)
@@ -5584,6 +5589,7 @@ def spy_profile(uid, pages, note, cache):
             break
         reviews += more
         got += 1
+        SPY['sub'] = f'отзывов загружено {len(reviews)}' + (f' из {tot}' if tot else '')
         form = spy_more_form(more_html)
     cache[uid] = {'at': time.time(), 'pages': got, 'reviews': [dict(r, text=r['text'][:100]) for r in reviews[:SPY_CACHE_REVIEWS]]}
     return {'reviews': reviews, 'pages': got, 'cached': False, 'missing': False}
@@ -5649,7 +5655,7 @@ def spy_run(p):
     result = {'params': {k: (' '.join(v) if isinstance(v, list) else v) for k, v in p.items()}, 'when': '', 'lots_total': 0,
               'lots_matched': 0, 'lots_used': 0, 'sellers_total': 0, 'sellers_checked': 0, 'partial': False, 'sellers': [], 'notes': []}
     try:
-        SPY.update(stage='Загружаю страницу категории', done=0, total=0)
+        SPY.update(stage='Загружаю страницу категории', sub='', done=0, total=0)
         path = f"/lots/{p['node']}/"
         spy_log(f'Категория {p["node"]}: один запрос страницы.')
         status, final, body = http_get(SITE_BASE + path, CURRENCY_COOKIES['rub'])
@@ -5660,7 +5666,7 @@ def spy_run(p):
         sel = spy_pick(matched, p['sort'], p['lots_limit'])
         result['lots_matched'], result['lots_used'] = len(matched), len(sel)
         if re.search(r'Показать\s+ещ[её]', text):
-            result['notes'].append('На странице категории есть кнопка «Показать ещё»: если лотов на сайте больше, чем «Лотов в категории» ниже, часть могла не попасть в ответ.')
+            result['notes'].append(f'На странице категории {len(lots)} лотов. Кнопка «Показать ещё предложения» только раскрывает лоты, которые уже есть на странице (в разметке они с классом lazyload-hidden), отдельных запросов она не делает, подгружать их не нужно.')
         if lots and not any(l['uid'] for l in lots[:50]):
             result['notes'].append('В блоках лотов не найдены ссылки на продавцов (/users/ID/): разметка могла измениться, шпион не может открыть профили.')
         by = {}
@@ -5775,7 +5781,7 @@ def h_spy_status(_q=None):
     res = SPY['result']
     if res is None and not SPY['running']:
         res = read_json(SPY_LAST, None) or None
-    return 200, {'running': SPY['running'], 'stage': SPY['stage'], 'done': SPY['done'], 'total': SPY['total'], 'log': SPY['log'][-20:],
+    return 200, {'running': SPY['running'], 'stage': SPY['stage'], 'sub': SPY.get('sub', ''), 'done': SPY['done'], 'total': SPY['total'], 'log': SPY['log'][-20:],
                  'err': SPY['err'], 'stopped': SPY['stopped'] or (protection()['reason'] if protection()['stopped'] else ''),
                  'started': SPY['started'], 'ended': SPY['ended'], 'result': res}
 
@@ -5801,7 +5807,77 @@ def h_spy_export(_b):
     return 200, {'ok': True, 'path': path, 'rows': len(rows)}
 
 
-ROUTES_SPY = {'GET': {'/api/spy/status': h_spy_status}, 'POST': {'/api/spy/start': h_spy_start, '/api/spy/stop': h_spy_stop, '/api/spy/export': h_spy_export}}
+# ---- название категории по номеру (подсказка под полем ввода) ----
+CATNAMES = P('catnames.json')
+CAT_OK_TTL, CAT_BAD_TTL, CAT_GAP = 7 * 86400, 600, 3.0   # найденное помним 7 суток, «не найдена»/сбой 10 минут; между запросами не меньше 3 с
+CAT_LOCK = threading.Lock()
+_cat_last = [0.0]
+
+
+def cat_parse_name(text):
+    """Название категории со страницы /lots/N/: заголовок h1, иначе «хлебные крошки» из JSON-LD, иначе начало <title>."""
+    soup = BeautifulSoup(text[:400000], 'html.parser')
+    h = soup.find('h1')
+    t = h.get_text(' ', strip=True) if h else ''
+    if not t:
+        names = []
+        for sc in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+            try:
+                data = json.loads(sc.string or '')
+            except ValueError:
+                continue
+            for d in (data if isinstance(data, list) else [data]):
+                if isinstance(d, dict) and d.get('@type') == 'BreadcrumbList':
+                    names = [str(x.get('name', '')) for x in d.get('itemListElement', []) if isinstance(x, dict)]
+        t = ', '.join(n for n in names if n)
+    if not t and soup.title:
+        t = re.split(r'\s+[/|]\s+', soup.title.get_text(' ', strip=True))[0]
+    return re.sub(r'\s+', ' ', t).strip()[:120]
+
+
+def h_catname(q):
+    """Название категории по номеру или ссылке. Один гостевой запрос на номер, результат запоминается (catnames.json).
+    Блокировку сайта не фиксирует и ничего не повторяет: при любом сбое просто пишет, что название не проверено."""
+    node = spy_node((q or {}).get('node'))
+    if not node:
+        return 200, {'found': None, 'name': '', 'note': 'Введите номер категории или ссылку вида funpay.com/lots/1112/.'}
+    key, now = str(node), time.time()
+    with CAT_LOCK:
+        cache = read_json(CATNAMES, {})
+        e = cache.get(key)
+        if isinstance(e, dict) and now - e.get('at', 0) < (CAT_OK_TTL if e.get('found') else CAT_BAD_TTL):
+            return 200, {'found': e.get('found'), 'name': e.get('name', ''), 'note': e.get('note', '')}
+        if protection()['stopped']:
+            return 200, {'found': None, 'name': '', 'note': 'Название не проверено: сегодня запросы к сайту остановлены.'}
+        wait = CAT_GAP - (now - _cat_last[0])
+        if wait > 0:
+            time.sleep(wait)
+        _cat_last[0] = time.time()
+        path = f'/lots/{node}/'
+        try:
+            status, final, body = http_get(SITE_BASE + path, CURRENCY_COOKIES['rub'])
+        except (FetchStop, urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError):
+            return 200, {'found': None, 'name': '', 'note': 'Название не проверено: нет связи с сайтом.'}
+        if status == 404:
+            res = {'found': False, 'name': '', 'note': 'Категория не найдена'}
+        elif status != 200:
+            res = {'found': None, 'name': '', 'note': f'Название не проверено: сайт ответил HTTP {status}.'}
+        elif urlparse(final).path.rstrip('/') != path.rstrip('/'):
+            res = {'found': False, 'name': '', 'note': 'Категория не найдена (сайт перенаправил на другой адрес)'}
+        else:
+            name = cat_parse_name(body.decode('utf-8', 'replace'))
+            res = {'found': True, 'name': name, 'note': '' if name else 'Категория есть, название на странице не распознано.'}
+        cache[key] = dict(res, at=now)
+        for k in sorted(cache, key=lambda k: cache[k].get('at', 0))[:-300]:
+            cache.pop(k, None)
+        try:
+            write_json_atomic(CATNAMES, cache)
+        except OSError:
+            pass
+        return 200, res
+
+
+ROUTES_SPY = {'GET': {'/api/spy/status': h_spy_status, '/api/spy/catname': h_catname}, 'POST': {'/api/spy/start': h_spy_start, '/api/spy/stop': h_spy_stop, '/api/spy/export': h_spy_export}}
 
 
 # ===== 9. Статистика ===================================================================================
@@ -7484,7 +7560,8 @@ def h_pl_list(_q=None):
     items = []
     for p in PL['items'].values():
         items.append({'id': p.meta['id'], 'name': p.meta['name'], 'version': p.meta['version'],
-                      'description': p.meta['description'], 'enabled': p.enabled})
+                      'description': p.meta['description'], 'enabled': p.enabled,
+                      'tab': str(p.meta.get('tab') or '')[:30]})
     return 200, {'items': items, 'errors': PL['errors'], 'folder': PLUGINS_DIR, 'logged': bool(ACC['key'])}
 
 

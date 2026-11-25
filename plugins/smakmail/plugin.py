@@ -26,7 +26,7 @@ from mailbox_pool import Pool, PoolError, check_mailbox, EMPTY, HAS_MAIL, BAD, U
 import magic_link_auto
 from magic_link_auto import AuthError, LinkTimeout, MagicLinkError, wait_for_magic_link
 
-PLUGIN = {'id': 'smakmail', 'name': 'Почты SmakMail', 'version': '1.2',
+PLUGIN = {'id': 'smakmail', 'name': 'Почты SmakMail', 'tab': 'Почты', 'version': '1.2',
           'description': 'Выдаёт покупателю адрес почты из вашего пула и присылает в чат ссылку для входа из письма.'}
 
 DEFAULTS = {
@@ -704,11 +704,20 @@ MB_HELP = ('По ящику на строку. Пароли на экран не
 STD_PROFILE = 'стандартный (настройки выше)'
 
 
+POOL_WARN = 100          # в панели предупреждаем, когда в используемом пуле осталось меньше стольких почт (только показ, на отправку не влияет)
+
+
+def pool_left(s):
+    """Сколько почт можно ещё выдать: в файле минус выданные, использованные и неисправные (как в step_pool_low)."""
+    return s['в файле'] - s['issued'] - s['used'] - s['bad']
+
+
 def pool_line(s):
     if s is None:
         return 'нет списка ящиков'
-    return (f'ящиков {s["в файле"]}; выдано {s["issued"]}, использовано {s["used"]}, неисправно {s["bad"]}; '
-            f'не проверялись {s["не проверялись"]}')
+    left = pool_left(s)
+    return (f'Всего {s["в файле"]} / Выдано {s["issued"] + s["used"]} / Осталось {left}' + (' (МАЛО)' if left < POOL_WARN else '')
+            + f'; неисправно {s["bad"]}, не проверялись {s["не проверялись"]}')
 
 
 def panel():
@@ -724,6 +733,8 @@ def panel():
     for n in sorted(used_pools(c)):
         if counts.get(n) is None:
             warns.append(f'Пул «{n}»: нет списка ящиков. Загрузите ящики в форме «Почты — пул {n}» ниже.')
+        elif pool_left(counts[n]) < POOL_WARN:
+            warns.append(f'В пуле «{n}» осталось {pool_left(counts[n])} почт (меньше {POOL_WARN}). Пополните список.')
     if c['link_pattern'] == magic_link_auto.DEFAULT_PATTERN:
         warns.append('Шаблон ссылки (стандартный профиль) стоит по умолчанию и не сверен с реальным письмом платформы.')
     per_pool = {n: sum(1 for l in c['lots'] if rule_for(c, l)[0] == n) for n in c['pools']}

@@ -1,5 +1,8 @@
 /* ---------- Плагины ---------- */
-var PLG={cur:null};
+var PLG={cur:null,btns:{}};
+function plSetBtns(){for(var k in PLG.btns)PLG.btns[k].textContent=(PLG.cur===k)?'Закрыть панель':'Открыть панель';}
+function plClose(){PLG.cur=null;$('pl-panel').textContent='';plSetBtns();}
+function plTabName(){return api('/api/plugins/list').then(function(d){var it=d.items||[],nm=it.length===1?(it[0].tab||it[0].name):'';if(!nm)return;NAMES.plugins=nm;var b=$('tab-plugins');if(b)b.textContent=nm;if(view==='plugins')$('ptitle').textContent=nm;}).catch(function(){});}
 function plLoad(){
   return api('/api/plugins/list').then(function(d){
     var er=$('pl-errors');er.textContent='';
@@ -15,7 +18,7 @@ function plLoad(){
       t.addEventListener('click',function(){
         if(!p.enabled&&!confirm('Включить плагин «'+p.name+'»? Автоотправка в нём всё равно выключена, пока вы не включите её в его настройках.'))return;
         ap('/api/plugins/enable',{id:p.id,enabled:!p.enabled}).then(function(){return plLoad();}).then(function(){if(PLG.cur===p.id)plPanel(p.id);}).catch(function(e){say(e.message,true);});});
-      var o=el('button','p','Открыть панель');o.type='button';o.addEventListener('click',function(){plPanel(p.id);});
+      var o=el('button','p',PLG.cur===p.id?'Закрыть панель':'Открыть панель');o.type='button';PLG.btns[p.id]=o;o.addEventListener('click',function(){if(PLG.cur===p.id)plClose();else plPanel(p.id);});
       bar.appendChild(t);bar.appendChild(o);c.appendChild(bar);box.appendChild(c);
     });
   }).catch(function(e){say(e.message,true);});
@@ -63,7 +66,7 @@ function plSettings(root,d,st){
   root.appendChild(bx);
 }
 function plPanel(id){
-  PLG.cur=id;
+  PLG.cur=id;plSetBtns();
   return api('/api/plugins/panel?id='+encodeURIComponent(id)).then(function(d){
     var root=$('pl-panel');root.textContent='';
     root.appendChild(el('h3','',d.name+(d.enabled?'':' (выключен: ничего не делает)')));
@@ -104,3 +107,4 @@ function plPanel(id){
     else root.appendChild(tbl(['Время','Итог','Событие'],d.log.map(function(l){return [l.time.replace('T',' '),l.ok?'ок':'ошибка',l.text];})));
   }).catch(function(e){say(e.message,true);});
 }
+plTabName();

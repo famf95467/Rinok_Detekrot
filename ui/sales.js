@@ -1,6 +1,6 @@
 /* ---------- Продажи конкурентов по остатку ---------- */
 var MSD=false;
-function msFill(st,force){var c=st.cfg;if(force||!MSD){$('ms-on').checked=c.enabled;$('ms-int').value=c.interval_min;$('ms-node').value=c.node;$('ms-max').value=c.max_sale;}
+function msFill(st,force){var c=st.cfg;if(force||!MSD){$('ms-on').checked=c.enabled;$('ms-int').value=c.interval_min;$('ms-node').value=c.node;$('ms-max').value=c.max_sale;catRefresh('ms-node');}
   var s=$('ms-state'),t;
   if(st.state==='stopped'){s.className='state bad';t='Остановлено: '+(st.stopped||'защита сайта')+'. Опрос не идёт до завтра, повтор запрещён.';}
   else if(st.state==='off'){s.className='state';t='Опрос выключен.'+(st.note?' '+st.note+'.':'');}
@@ -32,4 +32,4 @@ $('ms-save').addEventListener('click',function(){
   ap('/api/ms/settings',{enabled:on,interval_min:m,node:Number($('ms-node').value),max_sale:Number($('ms-max').value)}).then(function(){MSD=false;say('');return msLoad(true);}).catch(function(e){say(e.message,true);});});
 $('ms-reload').addEventListener('click',function(){msLoad(false);});$('ms-days').addEventListener('change',msReport);$('ms-q').addEventListener('input',msReport);
 setInterval(function(){if(view==='sales')msLoad(false);},30000);
-
+catHint('ms-node');

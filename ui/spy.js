@@ -12,7 +12,7 @@ function spFill(res){
   /* Один раз за открытие страницы, пока пользователь ничего не вводил: иначе стёртые поля возвращались бы после каждого опроса статуса. */
   if(SP.filled||!res||!res.params)return;SP.filled=true;var p=res.params;
   function set(id,v){var e=$(id);if(e&&!e.value&&v!==null&&v!==undefined&&v!=='')e.value=v;}
-  set('spy-cat',p.node);set('spy-q',p.query);set('spy-ex',p.exclude);set('spy-key',p.review_key);set('spy-pmin',p.price_min);if(p.sort)$('spy-order').value=p.sort;set('spy-lots',p.lots_limit);if(p.max_sellers)$('spy-ms').value=p.max_sellers;if(p.review_pages)$('spy-pg').value=String(p.review_pages);set('spy-pmax',p.price_max);
+  set('spy-cat',p.node);catRefresh('spy-cat');set('spy-q',p.query);set('spy-ex',p.exclude);set('spy-key',p.review_key);set('spy-pmin',p.price_min);if(p.sort)$('spy-order').value=p.sort;set('spy-lots',p.lots_limit);if(p.max_sellers)$('spy-ms').value=p.max_sellers;if(p.review_pages)$('spy-pg').value=String(p.review_pages);set('spy-pmax',p.price_max);
 }
 function spBody(){
   return {category:$('spy-cat').value,query:$('spy-q').value,exclude:$('spy-ex').value,review_key:$('spy-key').value,
@@ -63,7 +63,7 @@ function spList(){
 }
 function spRender(st){
   var s=$('spy-state');
-  var txt=st.running?(st.stage||'Работаю')+(st.total?': '+st.done+' из '+st.total:''):'';
+  var txt=st.running?(st.stage||'Работаю')+(st.total?': '+st.done+' из '+st.total:'')+(st.sub?' · '+st.sub:''):'';
   if(st.stopped){s.className='state bad';s.textContent='Запросы остановлены: '+st.stopped+'. Ничего не обходится, повтор завтра.';s.style.display='block';}
   else if(st.err){s.className='state bad';s.textContent='Сбой: '+st.err;s.style.display='block';}
   else s.style.display='none';
@@ -95,3 +95,4 @@ $('spy-stop').addEventListener('click',function(){ap('/api/spy/stop').then(funct
 $('spy-csv').addEventListener('click',function(){ap('/api/spy/export').then(function(r){say('Таблица сохранена: '+r.path+' (строк '+r.rows+').');}).catch(function(e){say(e.message,true);});});
 SPF.forEach(function(id){$(id).addEventListener('input',spSave);$(id).addEventListener('change',spSave);});
 $('spy-sort').addEventListener('change',spList);$('spy-zero').addEventListener('change',spList);
+catHint('spy-cat');catRefresh('spy-cat');
