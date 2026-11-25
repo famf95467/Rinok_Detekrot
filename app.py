@@ -2451,6 +2451,9 @@ def conf_blockers(o, now=None):
     if o['status'] in CONF_DONE:
         why.append('заказ уже закрыт (' + CONF_STATUS_RU[o['status']] + ')')
         return why
+    if (o.get('chat_check') or {}).get('result') in ('confirmed_admin', 'confirmed_buyer'):
+        why.append('в чате есть сообщение FunPay: заказ уже подтверждён, тикет не нужен')
+        return why
     if o['status'] != 'reminded':
         why.append('нет зафиксированного напоминания покупателю')
     if o.get('support_at'):
@@ -2711,7 +2714,8 @@ def tpl_save(template):
     lst = [x for x in tpl_load() if chat_norm(x) != chat_norm(t)]
     write_json_atomic(REMIND_TPL, {'templates': ([t] + lst)[:10]})
 
-CHAT_RES_RU = {'ok': 'можно писать тикет', 'young': 'ждёт 24 ч', 'problem': 'проблемный', 'no_reminder': 'напомнить',
+CHAT_RES_RU = {'confirmed_admin': 'подтверждён администратором', 'confirmed_buyer': 'подтверждён покупателем',
+               'ok': 'можно писать тикет', 'young': 'ждёт 24 ч', 'problem': 'проблемный', 'no_reminder': 'напомнить',
                'unclear': 'автор сообщения не определён', 'client_last': 'последним писал покупатель (старая проверка)',
                'no_match': 'последнее сообщение не напоминание (старая проверка)', 'no_time': 'время сообщения не разобрано',
                'no_buyer': 'нет покупателя', 'no_chat': 'диалог не найден'}
@@ -2779,6 +2783,28 @@ def match_hint(templates, text, order_id):
     return f'расхождение с позиции {i}: в чате «{body[i:i + 40]}», в тексте напоминания «{exp[i:i + 40]}»'
 
 
+SYS_CONFIRM_RE = re.compile(r'(Покупатель|Администратор)\s+(.+?)\s+подтвердил\w*\s+успешное\s+выполнение\s+заказа\s+#(\w+)', re.I)
+
+
+def chat_is_system(m):
+    """Системное сообщение FunPay («оповещение»): не сообщение покупателя, сколько бы ссылок на профили в нём ни было.
+    Признак: метка «оповещение» в шапке или текст «Покупатель/Администратор … подтвердил успешное выполнение заказа #…»."""
+    if 'оповещение' in str(m.get('label', '')):
+        return True
+    return SYS_CONFIRM_RE.search(re.sub(r'\s+', ' ', str(m.get('text', '')))) is not None
+
+
+def chat_confirmed_by(o, msgs):
+    """Есть ли в чате системное сообщение о подтверждении ЭТОГО заказа: 'администратор' | 'покупатель' | ''.
+    Сообщения о других заказах (у покупателя их может быть несколько) не считаются."""
+    found = ''
+    for m in msgs:
+        mt = SYS_CONFIRM_RE.search(re.sub(r'\s+', ' ', str(m.get('text', ''))))
+        if mt and mt.group(3).upper() == str(o['id']).upper():
+            found = 'администратор' if mt.group(1).casefold() == 'администратор' else (found or 'покупатель')
+    return found
+
+
 def conf_judge(o, msgs, templates, now):
     """(результат, подробности, время напоминания или None, короткая причина) по сообщениям диалога (последние ~60).
     Порядок: 1) любое сообщение покупателя, в любое время → problem; 2) нет напоминания → no_reminder;
@@ -2790,6 +2816,11 @@ def conf_judge(o, msgs, templates, now):
         return 'no_chat', 'в диалоге нет сообщений', None, 'в чате нет сообщений'
     buyer = conf_buyer(o)
     seen = f'просмотрено последних сообщений: {len(msgs)}'
+    who = chat_confirmed_by(o, msgs)
+    if who:                                           # FunPay сам написал, что заказ подтверждён: это главнее любых выводов по чату
+        return ('confirmed_admin' if who == 'администратор' else 'confirmed_buyer',
+                f'в чате сообщение FunPay: заказ подтверждён ({who}). {seen}', None, f'подтверждён: {who} (сообщение FunPay в чате)')
+    msgs = [m for m in msgs if not chat_is_system(m)]  # системные сообщения покупательскими не считаются
     theirs = [m for m in msgs if not m.get('mine') and buyer and m.get('uid') == buyer]
     if theirs:
         mt = chat_time(theirs[-1].get('time', ''), now)
@@ -2826,7 +2857,8 @@ def conf_judge(o, msgs, templates, now):
             f'{CONF_HOURS} ч прошло, покупатель не писал')
 
 
-VERDICT_RU = {'problem': 'Проблемный', 'wait': 'Ждёт 24 ч', 'ready': 'Можно писать тикет', 'remind': 'Напомнить',
+VERDICT_RU = {'admin_done': 'Подтверждён администратором', 'buyer_done': 'Подтверждён покупателем',
+              'problem': 'Проблемный', 'wait': 'Ждёт 24 ч', 'ready': 'Можно писать тикет', 'remind': 'Напомнить',
               'unclear': 'Автор сообщения не определён', 'unchecked': 'Чат не проверен', 'other': 'Перепроверьте чат', 'done': ''}
 
 
@@ -2840,6 +2872,8 @@ def conf_verdict(o, now=None):
         return out('done', CONF_STATUS_RU[o['status']])
     cc = o.get('chat_check') or {}
     res = cc.get('result', '')
+    if res in ('confirmed_admin', 'confirmed_buyer'):
+        return out('admin_done' if res == 'confirmed_admin' else 'buyer_done', cc.get('short') or 'в чате сообщение FunPay о подтверждении')
     manual = bool(o.get('chat_ok')) and not o.get('chat_auto')
     if not manual:
         if res in ('problem', 'client_last'):
@@ -2877,7 +2911,7 @@ def conf_chat_check(b):
     with CONF_LOCK:
         snap = [dict(o) for o in conf_load()['orders'].values() if o['status'] not in CONF_DONE]
     snap.sort(key=lambda o: o.get('paid_at') or '')
-    by, results = {}, {}
+    by, results, sysn = {}, {}, {}
     for o in snap:
         buyer = conf_buyer(o)
         if is_id(buyer, 15):
@@ -2903,9 +2937,10 @@ def conf_chat_check(b):
             break
         for o in by[buyer]:
             results[o['id']] = conf_judge(o, msgs, templates, now)
+            sysn[o['id']] = sum(1 for m in msgs if chat_is_system(m))
         msgs = None                                   # текст переписки дальше не живёт
     cnt = {'ok': 0, 'bad': 0}
-    reasons = {}
+    reasons, moved = {}, {}
     for _res, _d, _m, _s in results.values():
         reasons[CHAT_RES_RU[_res]] = reasons.get(CHAT_RES_RU[_res], 0) + 1
     with CONF_LOCK:
@@ -2914,9 +2949,14 @@ def conf_chat_check(b):
             o = d['orders'].get(oid)
             if not o or o['status'] in CONF_DONE:
                 continue
+            before = conf_verdict(o, now)['verdict']
             o['chat_check'] = {'at': conf_iso(now), 'result': res, 'text': CHAT_RES_RU[res], 'short': short, 'detail': detail,
                                'msg_at': conf_iso(mt) if mt else None}
             cnt['ok' if res == 'ok' else 'bad'] += 1
+            after = conf_verdict(o, now)['verdict']
+            if sysn.get(oid) and before != after:         # в чате есть системные сообщения FunPay и статус изменился
+                k = f'{VERDICT_RU[before] or before} → {VERDICT_RU[after] or after}'
+                moved[k] = moved.get(k, 0) + 1
             if res in ('ok', 'young'):                # время напоминания берём из чата: это факт, а не наша запись
                 cur = conf_dt(o.get('reminder_at'))
                 if o['status'] != 'reminded':
@@ -2932,11 +2972,12 @@ def conf_chat_check(b):
                 conf_log(oid, 'chat-ok', 'авто-отметка снята: ' + detail)
         conf_save(d)
         conf_log('', 'chat-check', f'проверено покупателей: {len(buyers) - (1 if stop else 0)}, заказов: {cnt["ok"] + cnt["bad"]}: '
-                 f'подходят {cnt["ok"]}, не подходят {cnt["bad"]} (' + ', '.join(f'{k}: {v}' for k, v in reasons.items()) + ') [проверка v3]' + (f'; не проверено из-за лимита {CHECK_MAX_BUYERS}: {left}' if left else '')
+                 f'подходят {cnt["ok"]}, не подходят {cnt["bad"]} (' + ', '.join(f'{k}: {v}' for k, v in reasons.items()) + ') [проверка v4]' + (f'; не проверено из-за лимита {CHECK_MAX_BUYERS}: {left}' if left else '')
+                 + (f'; сменили статус из-за системных сообщений FunPay: {sum(moved.values())} (' + ', '.join(f'{k}: {v}' for k, v in moved.items()) + ')' if moved else '; из-за системных сообщений статус не менялся')
                  + ('; остановлено: ' + str(stop)[:150] if stop else ''))
     if stop:
         raise stop
-    return {'buyers': len(buyers), 'ok': cnt['ok'], 'bad': cnt['bad'], 'left': left, 'reasons': reasons}
+    return {'buyers': len(buyers), 'ok': cnt['ok'], 'bad': cnt['bad'], 'left': left, 'reasons': reasons, 'moved': moved}
 
 
 def conf_mark_support(order_ids, when):
