@@ -32,7 +32,7 @@ function cfRender(){
     var ctd=el('td');
     if(o.verdict==='done'){ctd.appendChild(el('div','cnt','—'));}
     else{
-      var vb=el('div','sv',o.verdict_ru);vb.style.fontSize='14px';vb.style.color={problem:'var(--x)',unclear:'var(--x)',ready:'var(--s)',wait:'var(--n)',remind:'var(--acc)'}[o.verdict]||'';ctd.appendChild(vb);
+      var vb=el('div','sv',o.verdict_ru);vb.style.fontSize='14px';vb.style.color={problem:'var(--x)',unclear:'var(--x)',ready:'var(--s)',admin_done:'var(--s)',buyer_done:'var(--s)',wait:'var(--n)',remind:'var(--acc)'}[o.verdict]||'';ctd.appendChild(vb);
       ctd.appendChild(el('div','cnt',(o.verdict_short||'')+(o.verdict_src?' · '+o.verdict_src:'')));
       var cc=o.chat_check;
       if(cc&&cc.detail){var more=el('a','ol','детали');more.href='javascript:void(0)';var dv=el('div','cnt',cc.detail+' (проверка '+cc.at.replace('T',' ').slice(0,16)+')');dv.style.display='none';dv.style.maxWidth='360px';
@@ -77,7 +77,7 @@ $('cf-chk').addEventListener('click',function(){
   if(!tpl){say('Впишите текст напоминания в поле над таблицей.',true);return;}
   if(!confirm('Проверить чаты: один запрос на каждого покупателя (до 30 за раз), с паузами. Читаются последние сообщения (до 60), переписка не сохраняется, ничего не отправляется. Сравнивать с текстом из поля над таблицей. Продолжить?'))return;
   $('cf-chk').disabled=true;say('Проверяю чаты, это может занять несколько минут…');
-  ap('/api/confirm/chat-check',{template:tpl}).then(function(d){$('cf-chk').disabled=false;$('cf-flt').value='all';say('Проверено покупателей: '+d.buyers+'. Подходят: '+d.ok+', не подходят: '+d.bad+(d.reasons?' ('+Object.keys(d.reasons).map(function(k){return k+': '+d.reasons[k];}).join(', ')+')':'')+'.'+(d.left?' Не проверено из-за лимита: '+d.left+' покупателей, нажмите ещё раз.':''));return cfLoad();})
+  ap('/api/confirm/chat-check',{template:tpl}).then(function(d){$('cf-chk').disabled=false;$('cf-flt').value='all';say('Проверено покупателей: '+d.buyers+'. Подходят: '+d.ok+', не подходят: '+d.bad+(d.reasons?' ('+Object.keys(d.reasons).map(function(k){return k+': '+d.reasons[k];}).join(', ')+')':'')+'.'+(d.moved&&Object.keys(d.moved).length?' Сменили статус из-за системных сообщений FunPay: '+Object.keys(d.moved).map(function(k){return k+': '+d.moved[k];}).join(', ')+'.':'')+(d.left?' Не проверено из-за лимита: '+d.left+' покупателей, нажмите ещё раз.':''));return cfLoad();})
    .catch(function(e){$('cf-chk').disabled=false;say(e.message,true);cfLoad();});});
 $('cf-reload').addEventListener('click',cfLoad);
 $('cf-add').addEventListener('click',function(){
