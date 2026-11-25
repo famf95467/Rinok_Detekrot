@@ -97,3 +97,17 @@ button.p{background:var(--acc);border-color:var(--acc);color:#fff}
 .hm-ev{display:flex;gap:14px;padding:9px 0;border-top:1px solid var(--line)}.hm-ev:first-of-type{border-top:0}
 .hm-ev time{color:var(--mut);width:84px;flex:none;font-variant-numeric:tabular-nums}
 @media(max-width:900px){.hm-row,.hm-tiles{grid-template-columns:1fr}}
+
+/* ---------- Подсказки «?» и шаги (3.2) ---------- */
+.hq{width:20px;height:20px;padding:0;border-radius:50%;font-size:12px;font-weight:700;line-height:1;color:var(--acc);border-color:var(--acc);margin-left:8px;vertical-align:middle;background:none}
+.hq[aria-expanded=true]{background:var(--acc);color:#fff}
+.hqt{margin:6px 0 10px;padding:9px 13px;border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:10px;background:var(--card2);color:var(--mut);font-size:13px;max-width:780px}
+.hqt[hidden]{display:none}
+.steps{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin:10px 0}
+.stp{display:flex;flex-direction:column;gap:3px}
+.stp .sn{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.sar{align-self:flex-end;padding-bottom:7px;color:var(--mut);font-size:18px}
+.steps>label,.steps>.cnt,.steps>.hq{align-self:flex-end;padding-bottom:7px}
+.steps>.hq{padding-bottom:0;margin-bottom:7px}
+.steps>button#ap-resume{align-self:flex-end}
+.chip{display:inline-block;padding:6px 11px;border:1px dashed var(--line);border-radius:10px;color:var(--mut)}

@@ -29,4 +29,10 @@ $('quit').addEventListener('click',function(){
   if(!confirm('Выключить программу? Отметки уже сохранены.'))return;
   ap('/api/quit').then(function(){document.body.textContent='Программа выключена. Эту вкладку можно закрыть.';}).catch(function(e){say(e.message,true);});
 });
-
+/* ---------- подсказки «?» (3.2): кнопка button.hq[data-for=id], текст в div.hqt#id[hidden]; открывается кликом ---------- */
+document.addEventListener('click',function(e){
+  var b=e.target.closest?e.target.closest('button.hq'):null;if(!b)return;
+  var t=document.getElementById(b.getAttribute('data-for'));if(!t)return;
+  var open=t.hasAttribute('hidden');if(open)t.removeAttribute('hidden');else t.setAttribute('hidden','');
+  b.setAttribute('aria-expanded',open?'true':'false');
+});

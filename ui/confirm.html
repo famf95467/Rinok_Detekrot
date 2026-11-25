@@ -1,13 +1,13 @@
 <section id="v-confirm" style="display:none">
-<div class="box"><div class="cnt">Учёт заказов, которые покупатель забыл подтвердить. Здесь только учёт и подготовка текста тикета: ничего не отправляется ни покупателю, ни в поддержку. Тикет вы отправляете вручную. Тикет готовится только для заказов с напоминанием, прошедшим таймером и вашей отметкой «чат проверен».</div>
-<div class="bar" style="margin-top:8px"><label><input type="checkbox" id="cf-all"> Показывать закрытые</label>
-<button type="button" id="cf-reload">Обновить список</button>
-<button type="button" id="cf-sync" title="Один запрос страницы /orders/trade, нужен вход на вкладке «Аккаунт»">Синхронизировать с сайтом</button>
-<button type="button" id="cf-chk" title="Открывает чат с каждым покупателем и смотрит последние сообщения (до 60)">Проверить чаты</button>
-<label>Показывать: <select id="cf-flt"><option value="all">Все</option><option value="problem">Проблемный</option><option value="wait">Ждёт 24 ч</option><option value="ready">Можно писать тикет</option><option value="remind">Напомнить</option><option value="other">Прочие</option></select></label></div>
-<div class="fh" style="margin-top:8px">Текст вашего напоминания (как вы его отправляли; вместо номеров заказов поставьте {order})</div>
+<div class="box"><h3 style="margin-top:0">Подтверждения заказов<button type="button" class="hq" data-for="hp-cf-0" aria-expanded="false" title="Пояснение">?</button></h3>
+<div class="hqt" id="hp-cf-0" hidden>Учёт заказов, которые покупатель забыл подтвердить. Здесь только учёт и подготовка текста тикета: ничего не отправляется ни покупателю, ни в поддержку. Тикет вы отправляете вручную. Тикет готовится только для заказов с напоминанием, прошедшим таймером и вашей отметкой «чат проверен».</div>
+<div class="fh">Текст напоминания<button type="button" class="hq" data-for="hp-cf-1" aria-expanded="false" title="Пояснение">?</button></div>
+<div class="hqt" id="hp-cf-1" hidden>Текст вашего напоминания, как вы его отправляли; вместо номеров заказов поставьте {order}. Статус и причина показаны в таблице, подробности по ссылке «детали». Текст переписки не сохраняется, ничего не отправляется.</div>
 <textarea id="cf-tpl" rows="3" class="full" maxlength="1000"></textarea>
-<div class="cnt">Статус и причина показаны в таблице, подробности по ссылке «детали». Текст переписки не сохраняется, ничего не отправляется.</div></div>
+<div class="steps"><div class="stp"><span class="sn">Шаг 1</span><button type="button" id="cf-sync" title="Один запрос страницы /orders/trade, нужен вход на вкладке «Аккаунт»">Синхронизировать с сайтом</button></div><span class="sar">→</span><div class="stp"><span class="sn">Шаг 2</span><button type="button" id="cf-chk" title="Открывает чат с каждым покупателем и смотрит последние сообщения (до 60)">Проверить чаты</button></div></div>
+<div class="bar"><label><input type="checkbox" id="cf-all"> Показывать закрытые</label>
+<button type="button" id="cf-reload">Обновить список</button>
+<label>Показывать: <select id="cf-flt"><option value="all">Все</option><option value="problem">Проблемный</option><option value="wait">Ждёт 24 ч</option><option value="ready">Можно писать тикет</option><option value="remind">Напомнить</option><option value="other">Прочие</option></select></label></div></div>
 <div class="box" style="margin-top:10px"><h3>Добавить заказ вручную</h3>
 <div class="bar"><input type="text" id="cf-nid" placeholder="Номер заказа, например AB12CD34" style="width:220px">
 <input type="text" id="cf-nlot" placeholder="Лот (необязательно)" style="width:240px">
@@ -16,9 +16,7 @@
 <input type="text" id="cf-nat" placeholder="Оплачен: ГГГГ-ММ-ДД ЧЧ:ММ (пусто = сейчас)" style="width:300px">
 <button type="button" id="cf-add">Добавить</button></div></div>
 <div class="sum" id="cf-sum"></div><div id="cf-tbl"></div>
-<div class="bar"><button type="button" id="cf-ticket">Подготовить тикет</button>
-<label><input type="checkbox" id="cf-again"> повторить, если текст уже готовили</label>
-<button type="button" id="cf-sent">Отметить «тикет отправлен»</button>
-<span class="cnt">Без выбора галочками берутся все готовые заказы (для «Подготовить тикет»).</span></div>
+<div class="steps"><div class="stp"><span class="sn">Шаг 3</span><button type="button" class="p" id="cf-ticket">Подготовить тикет</button></div><span class="sar">→</span><div class="stp"><span class="sn">Шаг 4</span><button type="button" id="cf-sent">Отметить «тикет отправлен»</button></div><label><input type="checkbox" id="cf-again"> повторить, если текст уже готовили</label><button type="button" class="hq" data-for="hp-cf-2" aria-expanded="false" title="Пояснение">?</button></div>
+<div class="hqt" id="hp-cf-2" hidden>Без выбора галочками берутся все готовые заказы (для «Подготовить тикет»).</div>
 <div id="cf-res" style="display:none"><div class="cnt" id="cf-resnote"></div><pre class="log" id="cf-text"></pre></div>
 <h3>Журнал подтверждений</h3><div id="cf-log"></div></section>

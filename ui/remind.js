@@ -1,6 +1,7 @@
 /* ---------- Напоминания ---------- */
 var RM={rows:[],busy:false};
-function rmIdle(){RM.busy=false;$('rm-scan').disabled=false;$('rm-all').disabled=!RM.rows.some(function(r){return r.g.ok&&!r.done;});}
+function rmIdle(){RM.busy=false;$('rm-scan').disabled=false;$('rm-all').disabled=!RM.rows.some(function(r){return r.g.ok&&!r.done;});
+  var ready=!$('rm-all').disabled;$('rm-all').classList.toggle('p',ready);$('rm-scan').classList.toggle('p',!ready);}   // главное действие цветом: сначала «Найти заказы», после поиска «Напомнить всем»
 function rmSendOne(r,text){
   r.b.disabled=true;
   return ap('/api/remind/send',{buyer:r.g.buyer,text:text}).then(function(x){
